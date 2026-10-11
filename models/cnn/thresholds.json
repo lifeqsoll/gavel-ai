@@ -1,0 +1,12 @@
+{
+  "high": 0.5457113981246948,
+  "low": 0.011491280049085617,
+  "real_sources": [
+    "coco",
+    "open_images",
+    "wikimedia"
+  ],
+  "input": "native-resolution JPEG q90 cache, center crop 224",
+  "high_meaning": "score at or above which 1% of real validation photos are flagged",
+  "low_meaning": "score below which 0.1% of generated validation images fall"
+}

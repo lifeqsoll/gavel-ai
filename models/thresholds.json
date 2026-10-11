@@ -1,0 +1,11 @@
+{
+  "high": 0.4434795081615448,
+  "low": 0.018400445580482483,
+  "real_sources": [
+    "coco",
+    "open_images",
+    "wikimedia"
+  ],
+  "high_meaning": "probability at or above which 1% of real calibration photos are flagged",
+  "low_meaning": "probability below which 0.1% of generated calibration images fall"
+}

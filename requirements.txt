@@ -1,0 +1,11 @@
+numpy>=1.26
+opencv-python>=4.9
+scipy>=1.11
+pydantic>=2.6
+pytest>=8.0
+gradio>=5.0
+# Learned detector (CLIP backbone). Install a CUDA build of torch for GPU inference.
+torch>=2.1
+open_clip_torch>=2.24
+# Optional, required only for AnatomyAgent (legacy mp.solutions API, Python <= 3.11):
+# mediapipe==0.10.14

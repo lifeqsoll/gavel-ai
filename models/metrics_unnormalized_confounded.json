@@ -1,0 +1,57 @@
+{
+  "C": 10.0,
+  "in_distribution": {
+    "auc": 0.9999420688007645,
+    "tpr_at_1pct_fpr": 0.998088867654085,
+    "tpr_at_0.1pct_fpr": 0.9937888198757764,
+    "n_positive": 2093,
+    "n_negative": 4000
+  },
+  "held_out_generators": {
+    "Dalle2": {
+      "auc": 0.9709965,
+      "tpr_at_1pct_fpr": 0.734,
+      "n_generated": 1000
+    },
+    "Dalle3": {
+      "auc": 0.9999534999999999,
+      "tpr_at_1pct_fpr": 0.999,
+      "n_generated": 1000
+    },
+    "Firefly_Image2": {
+      "auc": 0.9983685580426861,
+      "tpr_at_1pct_fpr": 0.9656428943258719,
+      "n_generated": 1921
+    },
+    "Firefly_Image3": {
+      "auc": 0.9994000256673512,
+      "tpr_at_1pct_fpr": 0.9866529774127311,
+      "n_generated": 1948
+    },
+    "IdeogramV1": {
+      "auc": 0.9999117499999999,
+      "tpr_at_1pct_fpr": 0.997,
+      "n_generated": 1000
+    },
+    "IdeogramV2": {
+      "auc": 0.9996462500000001,
+      "tpr_at_1pct_fpr": 0.988,
+      "n_generated": 1000
+    },
+    "Imagen3": {
+      "auc": 0.999714995269631,
+      "tpr_at_1pct_fpr": 0.9933774834437086,
+      "n_generated": 1057
+    },
+    "MidjourneyV5_2": {
+      "auc": 0.9998644004014048,
+      "tpr_at_1pct_fpr": 0.9959859508278976,
+      "n_generated": 1993
+    },
+    "MidjourneyV6_1": {
+      "auc": 0.99895947973987,
+      "tpr_at_1pct_fpr": 0.9799899949974987,
+      "n_generated": 1999
+    }
+  }
+}

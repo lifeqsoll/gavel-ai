@@ -1,0 +1,102 @@
+{
+  "thresholds": {
+    "high": 0.5457113981246948,
+    "low": 0.011491280049085617,
+    "real_sources": [
+      "coco",
+      "open_images",
+      "wikimedia"
+    ],
+    "input": "native-resolution JPEG q90 cache, center crop 224",
+    "high_meaning": "score at or above which 1% of real validation photos are flagged",
+    "low_meaning": "score below which 0.1% of generated validation images fall"
+  },
+  "decisions_on_test": {
+    "generated_in_distribution": {
+      "generated": 0.9881,
+      "uncertain": 0.0119,
+      "real": 0.0
+    },
+    "coco_real": {
+      "generated": 0.0047,
+      "uncertain": 0.0705,
+      "real": 0.9247
+    },
+    "open_images_real": {
+      "generated": 0.018,
+      "uncertain": 0.2133,
+      "real": 0.7687
+    },
+    "wikimedia_real": {
+      "generated": 0.025,
+      "uncertain": 0.125,
+      "real": 0.85
+    },
+    "held_out_Dalle3": {
+      "generated": 0.821,
+      "uncertain": 0.162,
+      "real": 0.017
+    },
+    "held_out_Firefly_Image2": {
+      "generated": 0.1072,
+      "uncertain": 0.2296,
+      "real": 0.6631
+    },
+    "held_out_Firefly_Image3": {
+      "generated": 0.1776,
+      "uncertain": 0.4435,
+      "real": 0.3789
+    },
+    "held_out_IdeogramV1": {
+      "generated": 0.717,
+      "uncertain": 0.251,
+      "real": 0.032
+    }
+  },
+  "in_distribution": {
+    "vs_coco": {
+      "auc": 0.9996452460582894,
+      "tpr_at_1pct_fpr": 0.9966555183946488,
+      "n_generated": 2093,
+      "n_real": 4000
+    },
+    "vs_open_images": {
+      "auc": 0.9986715241280459,
+      "tpr_at_1pct_fpr": 0.978021978021978,
+      "n_generated": 2093,
+      "n_real": 3000
+    },
+    "vs_wikimedia": {
+      "auc": 0.9990533922599141,
+      "tpr_at_1pct_fpr": 0.9813664596273292,
+      "n_generated": 2093,
+      "n_real": 160
+    }
+  },
+  "held_out_generators": {
+    "Dalle3": {
+      "auc": 0.9865986033519553,
+      "tpr_at_1pct_fpr": 0.806,
+      "n_generated": 1000,
+      "n_real": 7160
+    },
+    "Firefly_Image2": {
+      "auc": 0.6562323223733588,
+      "tpr_at_1pct_fpr": 0.0986101919258769,
+      "n_generated": 1511,
+      "n_real": 7160
+    },
+    "Firefly_Image3": {
+      "auc": 0.8223590231493696,
+      "tpr_at_1pct_fpr": 0.1668377823408624,
+      "n_generated": 1948,
+      "n_real": 7160
+    },
+    "IdeogramV1": {
+      "auc": 0.9755851955307262,
+      "tpr_at_1pct_fpr": 0.701,
+      "n_generated": 1000,
+      "n_real": 7160
+    }
+  }
+}

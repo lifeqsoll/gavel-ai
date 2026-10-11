@@ -1,0 +1,40 @@
+{
+  "threshold_at_1pct_fpr_on_coco": 0.1919090896844864,
+  "real_source_check": {
+    "coco_test_flagged_rate": 0.01375,
+    "open_images_flagged_rate": 0.11126666666666667,
+    "n_open_images": 15000
+  },
+  "generated_vs_open_images": {
+    "in_distribution": {
+      "auc": 0.997518187609492,
+      "tpr_at_1pct_fpr": 0.9593884376493073,
+      "n_generated": 2093,
+      "n_real": 15000
+    },
+    "Dalle3": {
+      "auc": 0.9965907333333334,
+      "tpr_at_1pct_fpr": 0.922,
+      "n_generated": 1000,
+      "n_real": 15000
+    },
+    "Firefly_Image2": {
+      "auc": 0.9763440767703507,
+      "tpr_at_1pct_fpr": 0.7266710787557908,
+      "n_generated": 1511,
+      "n_real": 15000
+    },
+    "Firefly_Image3": {
+      "auc": 0.9885665297741275,
+      "tpr_at_1pct_fpr": 0.811088295687885,
+      "n_generated": 1948,
+      "n_real": 15000
+    },
+    "IdeogramV1": {
+      "auc": 0.9911857333333333,
+      "tpr_at_1pct_fpr": 0.832,
+      "n_generated": 1000,
+      "n_real": 15000
+    }
+  }
+}

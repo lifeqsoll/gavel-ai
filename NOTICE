@@ -1,0 +1,10 @@
+Gavel AI
+Copyright 2026 Lifeqsoll
+
+This product includes software developed by the project contributors and
+uses third-party libraries under their own licenses (OpenCV, MediaPipe,
+Gradio, PyTorch, NumPy, SciPy, Pydantic).
+
+Sample images and training data are not covered by this license. See the
+"Image sources and licenses" section of README.md for their sources and
+terms.

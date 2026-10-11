@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+.venv*/
+
+# Generated outputs
+/output/
+/results/
+
+# Model weights and datasets (never committed)
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.ckpt
+/data/
+/gavel-data/
+
+# Editor and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Not cleared for redistribution yet
+/samples/ai_generated/
+/models/exp_*/
+/models/layers_*/
