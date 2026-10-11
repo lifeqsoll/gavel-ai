@@ -1,0 +1,29 @@
+{
+  "global": {
+    "high": 0.5962293148040771,
+    "low": 0.06586100906133652,
+    "source": "models/thresholds.json (calibrated 1% FPR on real cal split)",
+    "votes_via": "L0 decision == generated (score >= high)"
+  },
+  "anatomy": {
+    "signal_threshold": 0.5,
+    "source": "one 2D distal hand WARNING => score 0.5; votes only on evidence",
+    "votes_via": "layer.signal from hand evidences"
+  },
+  "artifacts": {
+    "signal_threshold": 0.95,
+    "source": "calibrate_artifacts.py on 303 on-disk reals; target_fpr=0.02",
+    "votes_via": "score >= 0.950"
+  },
+  "geometry": {
+    "signal_threshold": 0.55,
+    "source": "CRITICAL perspective evidence after distance-aware MAD + min 6 lines; default var thr 0.05",
+    "votes_via": "CRITICAL cluster evidence"
+  },
+  "physics": {
+    "signal_threshold": 0.5,
+    "source": "one lighting evidence => score 0.5",
+    "votes_via": "layer.signal from lighting evidences"
+  },
+  "fusion": "L0 generated OR any voting layer.signal"
+}

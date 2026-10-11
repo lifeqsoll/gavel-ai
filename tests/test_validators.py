@@ -42,16 +42,51 @@ def test_ransac_recovers_converging_family_without_evidence():
     assert not report.has_critical
 
 
-def test_inconsistent_parallel_family_is_critical():
+def test_mild_angle_jitter_is_not_critical():
+    """Near-parallel real edges (scooters) look like mild MAD; must not CRITICAL."""
     rng = np.random.default_rng(0)
     angles = 70.0 + rng.uniform(-8.0, 8.0, size=8)
     offsets = rng.uniform(-4.0, 4.0, size=8)
     segs = _segments_through((1000.0, 150.0), angles, offsets)
     report = PerspectiveValidator().validate(segs, SIZE)
-    geo = [e for e in report.evidences if e.anomaly_type is AnomalyType.GEOMETRY_PERSPECTIVE_VIOLATION]
-    assert geo and geo[0].severity is Severity.CRITICAL
-    assert isinstance(geo[0].geometry, GeometryPayload)
-    assert geo[0].geometry.crossings
+    critical = [
+        e
+        for e in report.evidences
+        if e.anomaly_type is AnomalyType.GEOMETRY_PERSPECTIVE_VIOLATION
+        and e.severity is Severity.CRITICAL
+    ]
+    assert not critical
+
+
+def test_classify_extreme_spread_is_critical():
+    from core.validators.perspective import VanishingPointCluster
+
+    validator = PerspectiveValidator()
+    extreme = VanishingPointCluster(
+        point=(100.0, 100.0),
+        segment_indices=list(range(8)),
+        rms_residual_px=1.0,
+        n_pairs=28,
+        divergent_fraction=0.0,
+        robust_std_px=200.0,
+        robust_std_norm=0.20,
+        variance_px2=1.0,
+        vp_distance_norm=0.25,
+    )
+    assert validator._classify(extreme) is Severity.CRITICAL
+
+    mild_street_like = VanishingPointCluster(
+        point=(640.0, 360.0),
+        segment_indices=list(range(11)),
+        rms_residual_px=1.75,
+        n_pairs=55,
+        divergent_fraction=0.0,
+        robust_std_px=40.0,
+        robust_std_norm=0.028,
+        variance_px2=1.0,
+        vp_distance_norm=0.24,
+    )
+    assert validator._classify(mild_street_like) is None
 
 
 def test_normal_hand_has_no_anatomy_evidence():
@@ -60,14 +95,49 @@ def test_normal_hand_has_no_anatomy_evidence():
     assert report.evidences == []
 
 
-def test_distal_proportion_violation_is_critical():
+def test_legacy_3d_flags_do_not_emit_evidence_by_default():
     hand = build_synthetic_hand(length_scale={"index.distal": 1.6})
     analysis = analyze_hand(hand)
-    assert any(f.reason == "proportion" and f.severity is Severity.CRITICAL for f in analysis.flags)
+    assert any(f.reason == "proportion" for f in analysis.flags)
     report = AnatomyValidator().validate([hand])
-    ev = report.evidences[0]
-    assert ev.anomaly_type is AnomalyType.ANATOMY_HAND_DEFORMATION
-    assert ev.anatomy is not None and ev.anatomy.flagged_joints
+    assert report.evidences == []
+
+
+def test_2d_distal_crossing_emits_warning():
+    from core.observations import HandObservation
+    from core.validators.anatomy import analyze_hand_2d
+
+    hand = build_synthetic_hand()
+    # Cross index tip (7-8) with pinky tip (19-20): non-adjacent distal bones.
+    px = np.asarray(hand.landmarks_px, dtype=np.float64).copy()
+    px[7] = np.array([100.0, 100.0])
+    px[8] = np.array([200.0, 100.0])
+    px[19] = np.array([150.0, 50.0])
+    px[20] = np.array([150.0, 150.0])
+    crossed = HandObservation(
+        hand_index=0,
+        handedness=hand.handedness,
+        landmarks_3d=hand.landmarks_3d,
+        landmarks_px=px,
+    )
+    analysis = analyze_hand_2d(crossed)
+    assert analysis.metrics["bone_crossings_2d"] >= 1
+    report = AnatomyValidator().validate([crossed])
+    assert report.evidences
+    assert report.evidences[0].severity is Severity.WARNING
+    assert report.evidences[0].anomaly_type is AnomalyType.ANATOMY_HAND_DEFORMATION
+
+
+def test_hand_mostly_inside_face_box_is_dropped():
+    from agents.anatomy_agent import AnatomyAgent
+
+    face = [(100.0, 100.0, 200.0, 220.0)]
+    on_face = np.array([[150.0, 150.0], [160.0, 170.0], [140.0, 190.0], [120.0, 210.0]])
+    off_face = np.array([[20.0, 20.0], [40.0, 40.0], [60.0, 60.0], [80.0, 80.0]])
+    mixed = np.array([[150.0, 150.0], [20.0, 20.0], [40.0, 40.0], [60.0, 60.0]])
+    assert AnatomyAgent._is_face(on_face, face)
+    assert not AnatomyAgent._is_face(off_face, face)
+    assert not AnatomyAgent._is_face(mixed, face)
 
 
 def test_hyperextension_is_detected_as_negative_flexion():
@@ -131,3 +201,22 @@ def test_evidence_payload_must_match_anomaly_type():
             description="mismatch",
             geometry=GeometryPayload(image_diagonal=10.0),
         )
+
+
+def test_geometry_overlay_draws_cluster_segments_without_crossings():
+    """CRITICAL findings with empty outlier crossings must still paint the line family."""
+    from core.registry import GeometryPayload, LineSegment
+    from visualizer.overlay import draw_geometry_evidence
+
+    canvas = np.zeros((200, 200, 3), dtype=np.uint8)
+    payload = GeometryPayload(
+        vanishing_point=(100.0, 50.0),
+        cluster_segments=[
+            LineSegment(p1=(10.0, 180.0), p2=(90.0, 60.0)),
+            LineSegment(p1=(190.0, 180.0), p2=(110.0, 60.0)),
+        ],
+        crossings=[],
+        image_diagonal=282.0,
+    )
+    draw_geometry_evidence(canvas, payload, "GEO-01")
+    assert canvas.sum() > 0

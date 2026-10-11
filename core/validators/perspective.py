@@ -47,14 +47,21 @@ class PerspectiveConfig:
     inlier_threshold_px: float = 4.0
     min_sample_angle_deg: float = 8.0
     min_inliers: int = 4
+    min_evidence_lines: int = 6
+    """Ignore tiny clusters: scooter/texture edges often form unstable 4–5 line families."""
     ransac_iterations: int = 2000
     max_vanishing_points: int = 3
     max_region_factor: float = 10.0
     """Admissible vanishing point radius, in diagonals from the image center."""
-    variance_threshold_norm: float = 0.02
-    """Empirical: consistent corridor ~0.003, planted conflicting family ~0.02-0.04."""
+    variance_threshold_norm: float = 0.05
+    """Intersection MAD / diagonal. 0.02 FPs on real near-parallel families (scooters);
+    real corridors sit ~0.003; strong AI breaks often exceed ~0.12."""
+    vp_distance_slack: float = 0.9
+    """Multiply variance threshold by (1 + slack * vp_distance_norm). Far VPs inflate MAD."""
+    critical_spread_factor: float = 2.5
+    """CRITICAL when robust_std_norm exceeds factor * adaptive variance threshold."""
     divergent_fraction_threshold: float = 0.5
-    warning_fraction: float = 0.5
+    warning_fraction: float = 0.7
     outlier_sigma: float = 3.0
     max_crossings_reported: int = 12
     random_seed: int | None = 42
@@ -70,6 +77,7 @@ class VanishingPointCluster:
     robust_std_px: float
     robust_std_norm: float
     variance_px2: float
+    vp_distance_norm: float = 0.0
     crossings: list[CrossingPair] = field(default_factory=list)
 
 
@@ -293,7 +301,12 @@ class PerspectiveValidator:
         crossings: list[CrossingPair] = []
         if len(conv) >= 3 and robust_std_px > 0.0:
             outlier_rel = np.flatnonzero(conv_dist > cfg.outlier_sigma * robust_std_px)
-            order = outlier_rel[np.argsort(-conv_dist[outlier_rel])][: cfg.max_crossings_reported]
+            # When the whole cluster is spread but no pair is an outlier vs MAD, still
+            # report the farthest pairs so the overlay has something to draw.
+            if outlier_rel.size:
+                order = outlier_rel[np.argsort(-conv_dist[outlier_rel])][: cfg.max_crossings_reported]
+            else:
+                order = np.argsort(-conv_dist)[: cfg.max_crossings_reported]
             for rel in order:
                 pair = pair_ids[rel]
                 seg_a = segments[kept_orig[members[ii[pair]]]]
@@ -309,6 +322,7 @@ class PerspectiveValidator:
         vp_affine = homogeneous_to_affine(vp_h)
         if vp_affine is None:
             raise ValueError("Vanishing point is at infinity; the region mask should have rejected it")
+        vp_distance_norm = float(np.hypot(vp_affine[0] - center[0], vp_affine[1] - center[1]) / diag)
 
         return VanishingPointCluster(
             point=vp_affine,
@@ -319,21 +333,38 @@ class PerspectiveValidator:
             robust_std_px=robust_std_px,
             robust_std_norm=robust_std_px / diag,
             variance_px2=variance_px2,
+            vp_distance_norm=vp_distance_norm,
             crossings=crossings,
         )
 
-    def _classify(self, cluster: VanishingPointCluster) -> Severity | None:
+    def _adaptive_variance_threshold(self, cluster: VanishingPointCluster) -> float:
+        """Far vanishing points make pairwise intersections numerically noisy."""
         cfg = self.config
-        if cluster.n_pairs < 3:
+        return cfg.variance_threshold_norm * (1.0 + cfg.vp_distance_slack * cluster.vp_distance_norm)
+
+    def _classify(self, cluster: VanishingPointCluster) -> Severity | None:
+        """Flag only structurally inconsistent line families.
+
+        Root cause of real-photo FPs: near-parallel edges (scooter tops, texture) share a
+        distant VP with low line residual, but pairwise intersection MAD is unstable.
+        We therefore require a large cluster, distance-aware spread, and do not treat mild
+        MAD alone as CRITICAL.
+        """
+        cfg = self.config
+        n_lines = len(cluster.segment_indices)
+        if cluster.n_pairs < 6 or n_lines < cfg.min_evidence_lines:
             return None
-        var_thr = cfg.variance_threshold_norm
+
+        var_thr = self._adaptive_variance_threshold(cluster)
         div_thr = cfg.divergent_fraction_threshold
-        if cluster.robust_std_norm > var_thr or cluster.divergent_fraction > div_thr:
+        spread = cluster.robust_std_norm
+        div = cluster.divergent_fraction
+
+        # Strong signal: many intersections escape the admissible region, or extreme spread.
+        if div > div_thr or spread > cfg.critical_spread_factor * var_thr:
             return Severity.CRITICAL
-        if (
-            cluster.robust_std_norm > cfg.warning_fraction * var_thr
-            or cluster.divergent_fraction > cfg.warning_fraction * div_thr
-        ):
+        # Mild signal: spread above adaptive thr, or substantial divergence.
+        if spread > var_thr or div > cfg.warning_fraction * div_thr:
             return Severity.WARNING
         return None
 
@@ -347,11 +378,13 @@ class PerspectiveValidator:
     ) -> Evidence:
         cfg = self.config
         vx, vy = cluster.point
+        adapt_thr = self._adaptive_variance_threshold(cluster)
         description = (
             f"Линии, претендующие на параллельность ({len(cluster.segment_indices)} шт.), "
             f"сходятся в точку ({vx:.0f}, {vy:.0f}), но робастный разброс их попарных пересечений "
             f"составляет {cluster.robust_std_norm * 100:.2f}% диагонали кадра "
-            f"(порог {cfg.variance_threshold_norm * 100:.2f}%). Доля пар, пересекающихся вне "
+            f"(адаптивный порог {adapt_thr * 100:.2f}%, база {cfg.variance_threshold_norm * 100:.2f}%, "
+            f"VP dist {cluster.vp_distance_norm:.2f} diag). Доля пар, пересекающихся вне "
             f"допустимой области: {cluster.divergent_fraction * 100:.0f}%."
         )
         metrics = {
@@ -363,8 +396,10 @@ class PerspectiveValidator:
             "divergent_fraction": cluster.divergent_fraction,
             "robust_std_px": cluster.robust_std_px,
             "robust_std_norm": cluster.robust_std_norm,
+            "vp_distance_norm": cluster.vp_distance_norm,
             "variance_px2": cluster.variance_px2,
             "threshold_variance_norm": cfg.variance_threshold_norm,
+            "threshold_variance_norm_adaptive": adapt_thr,
             "threshold_divergent_fraction": cfg.divergent_fraction_threshold,
         }
         payload = GeometryPayload(

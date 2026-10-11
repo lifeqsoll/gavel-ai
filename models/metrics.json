@@ -1,109 +1,149 @@
 {
   "C": 10.0,
   "thresholds": {
-    "high": 0.4434795081615448,
-    "low": 0.018400445580482483,
+    "high": 0.5962293148040771,
+    "low": 0.06586100906133652,
     "real_sources": [
       "coco",
       "open_images",
-      "wikimedia"
+      "wikimedia",
+      "coco_scenes",
+      "wikimedia_scenes"
+    ],
+    "gen_sources": [
+      "nano_banana",
+      "cf_commercial_0",
+      "ecommerce_cc0",
+      "hmnsh_fake"
     ],
     "high_meaning": "probability at or above which 1% of real calibration photos are flagged",
     "low_meaning": "probability below which 0.1% of generated calibration images fall"
   },
   "in_distribution": {
     "vs_coco": {
-      "auc": 0.9994962971810797,
-      "tpr_at_1pct_fpr": 0.9880554228380315,
-      "tpr_at_0.1pct_fpr": 0.9703774486383182,
-      "n_generated": 2093,
+      "auc": 0.9995066915313734,
+      "tpr_at_1pct_fpr": 0.9885914874945151,
+      "tpr_at_0.1pct_fpr": 0.9670908293111014,
+      "n_generated": 2279,
       "n_real": 4000
     },
     "vs_open_images": {
-      "auc": 0.9986566332218506,
-      "tpr_at_1pct_fpr": 0.9751552795031055,
-      "tpr_at_0.1pct_fpr": 0.9020544672718586,
-      "n_generated": 2093,
+      "auc": 0.9983056896299547,
+      "tpr_at_1pct_fpr": 0.9670908293111014,
+      "tpr_at_0.1pct_fpr": 0.9043440105309346,
+      "n_generated": 2279,
       "n_real": 3000
     },
     "vs_wikimedia": {
-      "auc": 0.9930572145246058,
-      "tpr_at_1pct_fpr": 0.9015766841853798,
-      "tpr_at_0.1pct_fpr": 0.8638318203535594,
-      "n_generated": 2093,
+      "auc": 0.9924994515138218,
+      "tpr_at_1pct_fpr": 0.9315489249670909,
+      "tpr_at_0.1pct_fpr": 0.8837209302325582,
+      "n_generated": 2279,
       "n_real": 160
+    },
+    "vs_coco_scenes": {
+      "auc": 0.9995367999897473,
+      "tpr_at_1pct_fpr": 0.9872751206669592,
+      "tpr_at_0.1pct_fpr": 0.9670908293111014,
+      "n_generated": 2279,
+      "n_real": 719
+    },
+    "vs_wikimedia_scenes": {
+      "auc": 0.9956195476755342,
+      "tpr_at_1pct_fpr": 0.9135585783238263,
+      "tpr_at_0.1pct_fpr": 0.9003949100482668,
+      "n_generated": 2279,
+      "n_real": 118
     }
   },
   "decisions_on_test": {
     "generated_in_distribution": {
-      "generated": 0.9814,
-      "uncertain": 0.0177,
-      "real": 0.001
+      "generated": 0.9719,
+      "uncertain": 0.025,
+      "real": 0.0031
     },
     "coco_real": {
-      "generated": 0.0037,
-      "uncertain": 0.0895,
-      "real": 0.9067
+      "generated": 0.002,
+      "uncertain": 0.0357,
+      "real": 0.9623
     },
     "open_images_real": {
-      "generated": 0.0153,
-      "uncertain": 0.1213,
-      "real": 0.8633
+      "generated": 0.013,
+      "uncertain": 0.077,
+      "real": 0.91
     },
     "wikimedia_real": {
       "generated": 0.1125,
-      "uncertain": 0.3312,
-      "real": 0.5563
+      "uncertain": 0.1938,
+      "real": 0.6937
+    },
+    "coco_scenes_real": {
+      "generated": 0.0014,
+      "uncertain": 0.0306,
+      "real": 0.968
+    },
+    "wikimedia_scenes_real": {
+      "generated": 0.0424,
+      "uncertain": 0.1695,
+      "real": 0.7881
     },
     "held_out_Dalle3": {
-      "generated": 0.977,
-      "uncertain": 0.023,
-      "real": 0.0
+      "generated": 0.945,
+      "uncertain": 0.05,
+      "real": 0.005
     },
     "held_out_Firefly_Image2": {
-      "generated": 0.816,
-      "uncertain": 0.1568,
-      "real": 0.0271
+      "generated": 0.7664,
+      "uncertain": 0.1668,
+      "real": 0.0668
     },
     "held_out_Firefly_Image3": {
-      "generated": 0.9163,
-      "uncertain": 0.076,
-      "real": 0.0077
+      "generated": 0.8568,
+      "uncertain": 0.1217,
+      "real": 0.0216
     },
     "held_out_IdeogramV1": {
-      "generated": 0.933,
-      "uncertain": 0.061,
-      "real": 0.006
+      "generated": 0.873,
+      "uncertain": 0.116,
+      "real": 0.011
     }
   },
   "held_out_generators": {
     "Dalle3": {
-      "auc": 0.9986409916201117,
-      "tpr_at_1pct_fpr": 0.975,
-      "tpr_at_0.1pct_fpr": 0.817,
+      "auc": 0.9979022133299987,
+      "tpr_at_1pct_fpr": 0.949,
+      "tpr_at_0.1pct_fpr": 0.802,
       "n_generated": 1000,
-      "n_real": 7160
+      "n_real": 7997
     },
     "Firefly_Image2": {
-      "auc": 0.9867407170507527,
-      "tpr_at_1pct_fpr": 0.8100595632031767,
-      "tpr_at_0.1pct_fpr": 0.5327597617471873,
+      "auc": 0.9835552163960889,
+      "tpr_at_1pct_fpr": 0.7776307081403044,
+      "tpr_at_0.1pct_fpr": 0.5526141628060887,
       "n_generated": 1511,
-      "n_real": 7160
+      "n_real": 7997
     },
     "Firefly_Image3": {
-      "auc": 0.9945405615844356,
-      "tpr_at_1pct_fpr": 0.9132443531827515,
-      "tpr_at_0.1pct_fpr": 0.6555441478439425,
+      "auc": 0.9928732258169708,
+      "tpr_at_1pct_fpr": 0.8660164271047228,
+      "tpr_at_0.1pct_fpr": 0.6262833675564682,
       "n_generated": 1948,
-      "n_real": 7160
+      "n_real": 7997
     },
     "IdeogramV1": {
-      "auc": 0.9962914804469274,
-      "tpr_at_1pct_fpr": 0.93,
-      "tpr_at_0.1pct_fpr": 0.651,
+      "auc": 0.9951353007377767,
+      "tpr_at_1pct_fpr": 0.88,
+      "tpr_at_0.1pct_fpr": 0.639,
       "n_generated": 1000,
-      "n_real": 7160
+      "n_real": 7997
     }
-  }
+  },
+  "feature_kind": "normalized",
+  "layer_indices": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "standardized": false
 }

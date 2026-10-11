@@ -43,6 +43,11 @@ class DetectorThresholds:
         return "uncertain"
 
 
+# Wide diptychs (painting|AI side-by-side) center-crop onto the seam and look "real".
+# Score left/right halves too and keep the strongest generation signal.
+WIDE_ASPECT_RATIO = 1.6
+
+
 @dataclass(frozen=True)
 class DetectorOutput:
     probability: float
@@ -50,6 +55,10 @@ class DetectorOutput:
     decision: Decision
     thresholds: DetectorThresholds
     model: str = MODEL_ID
+    view: str = "full"
+    # Per-tile probabilities when a wide image is split (full/left/right).
+    view_scores: dict[str, float] | None = None
+    views_disagree: bool = False
 
 
 class LearnedDetector:
@@ -88,14 +97,11 @@ class LearnedDetector:
         self._preprocess = preprocess
         self._device = device
 
-    def score(self, image_bgr: np.ndarray) -> DetectorOutput:
-        if image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
-            raise ValueError("expected a BGR image with shape (H, W, 3)")
-        self._ensure_backbone()
+    def _score_rgb(self, rgb: np.ndarray) -> tuple[float, float]:
+        """Return (probability, logit) for one RGB uint8 array."""
         import torch
         from PIL import Image
 
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         normalized = normalize_pil(Image.fromarray(rgb))
         tensor = self._preprocess(normalized).unsqueeze(0).to(self._device)
         with torch.no_grad():
@@ -103,9 +109,42 @@ class LearnedDetector:
             emb = emb / emb.norm(dim=-1, keepdim=True)
         logit = float(emb.float().cpu().numpy()[0] @ self._coef + self._intercept)
         probability = float(1.0 / (1.0 + np.exp(-logit)))
+        return probability, logit
+
+    @staticmethod
+    def _views(image_bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
+        h, w = image_bgr.shape[:2]
+        views = [("full", image_bgr)]
+        if w / max(h, 1) >= WIDE_ASPECT_RATIO and w >= 64:
+            mid = w // 2
+            views.append(("left", image_bgr[:, :mid]))
+            views.append(("right", image_bgr[:, mid:]))
+        return views
+
+    def score(self, image_bgr: np.ndarray) -> DetectorOutput:
+        if image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
+            raise ValueError("expected a BGR image with shape (H, W, 3)")
+        self._ensure_backbone()
+
+        best_prob = -1.0
+        best_logit = 0.0
+        best_view = "full"
+        view_scores: dict[str, float] = {}
+        for name, tile_bgr in self._views(image_bgr):
+            rgb = cv2.cvtColor(tile_bgr, cv2.COLOR_BGR2RGB)
+            prob, logit = self._score_rgb(rgb)
+            view_scores[name] = prob
+            if prob > best_prob:
+                best_prob, best_logit, best_view = prob, logit, name
+        disagree = False
+        if len(view_scores) >= 3:
+            disagree = (max(view_scores.values()) - min(view_scores.values())) >= 0.45
         return DetectorOutput(
-            probability=probability,
-            logit=logit,
-            decision=self.thresholds.decide(probability),
+            probability=best_prob,
+            logit=best_logit,
+            decision=self.thresholds.decide(best_prob),
             thresholds=self.thresholds,
+            view=best_view,
+            view_scores=view_scores,
+            views_disagree=disagree,
         )

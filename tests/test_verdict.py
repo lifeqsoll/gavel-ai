@@ -83,3 +83,131 @@ def test_score_combines_independent_evidence(severities, expected_score, expecte
 def test_score_never_exceeds_one():
     evidences = [_evidence(i + 1, Severity.CRITICAL) for i in range(12)]
     assert compute_verdict(_protocol(PASSED, evidences)).score <= 1.0
+
+
+def test_fusion_a_hard_layer_beats_l0_real():
+    """Geometry CRITICAL (hard) can overturn L0_real; soft artifacts cannot."""
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_GENERATION_SIGNAL, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="t.png", width=10, height=10),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.022,
+            logit=-3.8,
+            decision="real",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(name="global", status="ran", score=0.022, signal=False),
+            geometry=LayerScore(
+                name="geometry", status="ran", score=0.55, signal=True, reason="critical=1"
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "generated"
+    assert label == LABEL_GENERATION_SIGNAL
+    assert "geometry" in fusion
+
+
+def test_anatomy_hand_veto_suppresses_l0_only_fp():
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_NO_SIGNAL, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="hand.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.996,
+            logit=5.5,
+            decision="generated",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global", status="ran", score=0.996, signal=True, reason="decision=generated"
+            ),
+            anatomy=LayerScore(
+                name="anatomy",
+                status="ran",
+                score=0.0,
+                signal=False,
+                reason="hand_warnings=0 hands=1 face=0 hand_span=0.194",
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "real"
+    assert label == LABEL_NO_SIGNAL
+    assert fusion == "anatomy_hand_veto"
+
+
+def test_artifacts_cannot_overturn_l0_real():
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_NO_SIGNAL, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="train.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.006,
+            logit=-5.0,
+            decision="real",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(name="global", status="ran", score=0.006, signal=False),
+            artifacts=LayerScore(
+                name="artifacts", status="ran", score=1.0, signal=True, reason="flat_kurtosis=91.8"
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "real"
+    assert label == LABEL_NO_SIGNAL
+    assert "L0_real" in fusion
+    assert "artifacts" in fusion
+
+
+def test_anatomy_hand_veto_does_not_kill_ai_face():
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_GENERATION_SIGNAL, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="face.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.99,
+            logit=5.0,
+            decision="generated",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(name="global", status="ran", score=0.99, signal=True),
+            anatomy=LayerScore(
+                name="anatomy",
+                status="ran",
+                score=0.0,
+                signal=False,
+                reason="hand_warnings=0 hands=0 face=478 hand_span=0.000",
+            ),
+        ),
+    )
+    _, decision, fusion = fuse_layers(protocol)
+    assert decision == "generated"
+    assert "L0" in fusion
+    assert fusion != "anatomy_hand_veto"

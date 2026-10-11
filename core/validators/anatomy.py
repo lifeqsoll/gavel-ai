@@ -1,17 +1,12 @@
-"""Hand anatomy validator: phalanx proportions, joint flexion, adjacent finger angles.
+"""Hand anatomy validator.
 
-Measurements use 3D world landmarks (meters), so proportions do not depend on scale.
+Evidence uses 2D image-plane rules only (calibrated against real curled hands):
+    1. Non-adjacent finger bones that properly intersect in the image -> WARNING.
+    2. At least `min_bone_crossings` such intersections on one hand.
 
-Hand frame:
-    f: hand axis, wrist -> middle finger MCP.
-    n: palm normal, orthogonalized to f. Sign convention is described in palm_frame.
-    Flexion is positive when the distal bone bends toward the palm (n), negative on hyperextension.
-
-Checks:
-    1. Phalanx ratios distal/proximal and middle/proximal against anatomical norms.
-       Deviation above 35% -> CRITICAL, above 20% -> WARNING.
-    2. PIP/DIP and thumb MCP/IP flexion outside the physiological range -> CRITICAL.
-    3. Angle between proximal phalanges of adjacent fingers above the limit -> CRITICAL.
+Legacy 3D flexion/proportion checks remain in `analyze_hand` for unit tests and debug
+(`emit_legacy_3d_evidence=True`). They are off by default because MediaPipe world
+landmarks fire on normal hands (real_hand_gym: 24 flags).
 """
 
 from __future__ import annotations
@@ -104,14 +99,32 @@ FINGER_LAYOUTS: tuple[FingerLayout, ...] = (
 )
 
 
+# Distal tip bones only. Proximal crossings are common in real grips (dumbbells, phones).
+DISTAL_BONES: tuple[tuple[str, int, int], ...] = (
+    ("thumb", 3, 4),
+    ("index", 7, 8),
+    ("middle", 11, 12),
+    ("ring", 15, 16),
+    ("pinky", 19, 20),
+)
+ADJACENT_FINGERS = {
+    frozenset(("index", "middle")),
+    frozenset(("middle", "ring")),
+    frozenset(("ring", "pinky")),
+}
+
+
 @dataclass(frozen=True)
 class AnatomyConfig:
-    proportion_critical_deviation: float = 0.35
     proportion_warning_deviation: float = 0.20
     adjacent_max_deg: float = 45.0
     bbox_padding_ratio: float = 0.12
     """Half-size of the joint box as a fraction of the hand size (wrist to middle MCP)."""
     min_bbox_padding_px: float = 6.0
+    # 2D self-crossing evidence (default on). Legacy 3D evidence stays off.
+    emit_hand_evidence: bool = True
+    emit_legacy_3d_evidence: bool = False
+    min_bone_crossings: int = 2
 
 
 @dataclass(frozen=True)
@@ -139,6 +152,7 @@ class AnatomyReport:
 
     @property
     def has_critical(self) -> bool:
+        # Anatomy never produces CRITICAL evidence; kept for interface compatibility.
         return any(e.severity is Severity.CRITICAL for e in self.evidences)
 
 
@@ -248,7 +262,7 @@ def analyze_hand(hand: HandObservation, config: AnatomyConfig | None = None) -> 
                     landmark_index=joint.landmark,
                     joint_name=f"{layout.name}.{joint.name}",
                     reason="angle",
-                    severity=Severity.CRITICAL,
+                    severity=Severity.WARNING,
                     message=(
                         f"{kind} at {layout.name}.{joint.name}: {angle:.0f} deg "
                         f"(allowed {joint.min_flex_deg:.0f}..{joint.max_flex_deg:.0f} deg)"
@@ -270,7 +284,7 @@ def analyze_hand(hand: HandObservation, config: AnatomyConfig | None = None) -> 
                     landmark_index=base,
                     joint_name=f"{finger}.MCP",
                     reason="adjacent_angle",
-                    severity=Severity.CRITICAL,
+                    severity=Severity.WARNING,
                     message=message,
                     value=spread,
                 )
@@ -280,11 +294,62 @@ def analyze_hand(hand: HandObservation, config: AnatomyConfig | None = None) -> 
 
 
 def _classify_deviation(deviation: float, cfg: AnatomyConfig) -> Severity | None:
-    if deviation > cfg.proportion_critical_deviation:
-        return Severity.CRITICAL
     if deviation > cfg.proportion_warning_deviation:
         return Severity.WARNING
     return None
+
+
+def _orient(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    return float((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+
+
+def _segments_cross(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, p4: np.ndarray) -> bool:
+    """True when open segments p1-p2 and p3-p4 properly intersect (shared endpoints ignored)."""
+    if (
+        np.allclose(p1, p3)
+        or np.allclose(p1, p4)
+        or np.allclose(p2, p3)
+        or np.allclose(p2, p4)
+    ):
+        return False
+    o1, o2 = _orient(p1, p2, p3), _orient(p1, p2, p4)
+    o3, o4 = _orient(p3, p4, p1), _orient(p3, p4, p2)
+    return (o1 * o2 < 0.0) and (o3 * o4 < 0.0)
+
+
+def analyze_hand_2d(hand: HandObservation, config: AnatomyConfig | None = None) -> HandAnalysis:
+    """2D evidence: distal tip bones of non-adjacent fingers that cross in the image plane.
+
+    Calibrated so a real gripping hand (samples/real/real_hand_gym.jpg) yields 0 crossings.
+    """
+    cfg = config or AnatomyConfig()
+    px = np.asarray(hand.landmarks_px, dtype=np.float64)
+    flags: list[AnatomyFlag] = []
+    crossings = 0
+    for i, (fa, a0, a1) in enumerate(DISTAL_BONES):
+        for fb, b0, b1 in DISTAL_BONES[i + 1 :]:
+            if frozenset((fa, fb)) in ADJACENT_FINGERS:
+                continue
+            if not _segments_cross(px[a0], px[a1], px[b0], px[b1]):
+                continue
+            crossings += 1
+            flags.append(
+                AnatomyFlag(
+                    landmark_index=a1,
+                    joint_name=f"distal_{fa}_x_{fb}",
+                    reason="angle",
+                    severity=Severity.WARNING,
+                    message=f"distal tips of {fa} and {fb} cross in the image plane",
+                    value=float(crossings),
+                )
+            )
+    metrics = {"bone_crossings_2d": float(crossings)}
+    # One clear non-adjacent distal crossing is enough; grips do not produce these.
+    if crossings < 1:
+        flags = []
+    return HandAnalysis(
+        hand_index=hand.hand_index, handedness=hand.handedness, metrics=metrics, flags=flags
+    )
 
 
 class AnatomyValidator:
@@ -295,10 +360,23 @@ class AnatomyValidator:
         analyses: list[HandAnalysis] = []
         evidences: list[Evidence] = []
         for hand in hands:
-            analysis = analyze_hand(hand, self.config)
+            analysis_2d = analyze_hand_2d(hand, self.config)
+            analysis_3d = analyze_hand(hand, self.config)
+            merged_flags = list(analysis_2d.flags)
+            if self.config.emit_legacy_3d_evidence:
+                merged_flags.extend(analysis_3d.flags)
+            metrics = {**analysis_3d.metrics, **analysis_2d.metrics}
+            analysis = HandAnalysis(
+                hand_index=hand.hand_index,
+                handedness=hand.handedness,
+                metrics=metrics,
+                flags=merged_flags,
+            )
             analyses.append(analysis)
-            if analysis.flags:
-                evidences.append(self._build_evidence(hand, analysis))
+            if analysis_2d.flags and self.config.emit_hand_evidence:
+                evidences.append(self._build_evidence(hand, analysis_2d))
+            elif analysis_3d.flags and self.config.emit_legacy_3d_evidence:
+                evidences.append(self._build_evidence(hand, analysis_3d))
         return AnatomyReport(analyses=analyses, evidences=evidences)
 
     def _build_evidence(self, hand: HandObservation, analysis: HandAnalysis) -> Evidence:
@@ -326,14 +404,13 @@ class AnatomyValidator:
                 )
             )
 
-        has_critical = any(f.severity is Severity.CRITICAL for f in analysis.flags)
         messages = "; ".join(dict.fromkeys(flag.message for flag in analysis.flags))
         description = f"Рука #{hand.hand_index + 1} ({hand.handedness}): {messages}."
 
         return Evidence(
             evidence_id=f"ANAT-{hand.hand_index + 1:02d}",
             anomaly_type=AnomalyType.ANATOMY_HAND_DEFORMATION,
-            severity=Severity.CRITICAL if has_critical else Severity.WARNING,
+            severity=Severity.WARNING,
             description=description,
             metrics={k: float(v) for k, v in analysis.metrics.items()},
             anatomy=AnatomyPayload(

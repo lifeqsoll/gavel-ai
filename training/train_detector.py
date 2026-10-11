@@ -62,6 +62,11 @@ def main() -> None:
     parser.add_argument("--features-dir", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--real-sources", default="coco,open_images")
+    parser.add_argument(
+        "--gen-sources",
+        default="nano_banana,cf_commercial_0",
+        help="comma-separated generated feature files used for training",
+    )
     parser.add_argument("--feature-kind", choices=["normalized", "layers"], default="normalized")
     parser.add_argument("--layer-indices", default="0,1,2,3", help="layer positions in the layers file")
     parser.add_argument("--standardize", action="store_true")
@@ -71,28 +76,53 @@ def main() -> None:
     )
     layer_indices = [int(i) for i in args.layer_indices.split(",") if i.strip()]
     real_names = [name.strip() for name in args.real_sources.split(",") if name.strip()]
+    gen_names = [name.strip() for name in args.gen_sources.split(",") if name.strip()]
     rng = np.random.default_rng(SEED)
 
     def load(name: str):
         return load_features(features_dir, name, args.feature_kind, layer_indices)
 
-    nano_x, nano_y, nano_g, nano_r = load("nano_banana")
-    cf_x, cf_y, cf_g, cf_r = load("cf_commercial_0")
-    train_mask = nano_r == "train"
-    cf_train = cf_r == "train"
-    eval_mask = cf_r == "eval_only"
-    pos_x = np.concatenate([nano_x[train_mask], cf_x[cf_train & (cf_y == 1)]])
+    pos_parts = []
+    cf_x = cf_y = cf_g = cf_r = None
+    used_gen: list[str] = []
+    for name in gen_names:
+        try:
+            x, y, g, r = load(name)
+        except FileNotFoundError:
+            print(f"skip missing gen source: {name}", flush=True)
+            continue
+        if name.startswith("cf_commercial"):
+            cf_x, cf_y, cf_g, cf_r = x, y, g, r
+            mask = (r == "train") & (y == 1)
+        else:
+            mask = (r == "train") & (y == 1) if (r == "train").any() else (y == 1)
+        if mask.any():
+            pos_parts.append(x[mask])
+            used_gen.append(name)
+    if not pos_parts:
+        raise RuntimeError(f"no generated training samples from {gen_names}")
+    pos_x = np.concatenate(pos_parts)
 
     pos_tr, pos_ca, pos_te = split_indices(len(pos_x), rng)
-    real = {name: load(name)[0] for name in real_names}
+    real = {}
+    for name in real_names:
+        try:
+            real[name] = load(name)[0]
+        except FileNotFoundError:
+            print(f"skip missing real source: {name}", flush=True)
+    real_names = list(real)
+    if not real_names:
+        raise RuntimeError("no real training sources available")
     splits = {name: split_indices(len(x), rng) for name, x in real.items()}
+    gen_names = used_gen
 
     scaler = None
     if args.standardize:
         raw_train = np.concatenate([pos_x[pos_tr]] + [real[n][splits[n][0]] for n in real_names])
         scaler = StandardScaler().fit(raw_train)
         pos_x = scaler.transform(pos_x)
-        cf_x = scaler.transform(cf_x)
+        if cf_x is not None:
+            cf_x = scaler.transform(cf_x)
         real = {n: scaler.transform(x) for n, x in real.items()}
 
     X_train = np.concatenate([pos_x[pos_tr]] + [real[n][splits[n][0]] for n in real_names])
@@ -117,6 +147,7 @@ def main() -> None:
         "high": float(np.quantile(real_calib_scores, 0.99)),
         "low": float(np.quantile(gen_calib_scores, 0.001)),
         "real_sources": real_names,
+        "gen_sources": gen_names,
         "high_meaning": "probability at or above which 1% of real calibration photos are flagged",
         "low_meaning": "probability below which 0.1% of generated calibration images fall",
     }
@@ -148,10 +179,12 @@ def main() -> None:
         metrics["decisions_on_test"][f"{name}_real"] = decide(clf.predict_proba(test_x)[:, 1])
     real_test = np.concatenate(real_test)
 
-    for gen in sorted(set(cf_g[eval_mask])):
-        gen_x = cf_x[eval_mask & (cf_g == gen)]
-        metrics["held_out_generators"][gen] = _pair(gen_x, real_test, clf)
-        metrics["decisions_on_test"][f"held_out_{gen}"] = decide(clf.predict_proba(gen_x)[:, 1])
+    if cf_x is not None and cf_r is not None:
+        eval_mask = cf_r == "eval_only"
+        for gen in sorted(set(cf_g[eval_mask])):
+            gen_x = cf_x[eval_mask & (cf_g == gen)]
+            metrics["held_out_generators"][gen] = _pair(gen_x, real_test, clf)
+            metrics["decisions_on_test"][f"held_out_{gen}"] = decide(clf.predict_proba(gen_x)[:, 1])
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     metrics["feature_kind"] = args.feature_kind

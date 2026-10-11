@@ -49,13 +49,15 @@ HAND_BONES = (
 
 
 class StaticAnatomyAgent:
-    """Returns predefined hand observations instead of running MediaPipe."""
+    """Returns a BodyScene with predefined hands and no face/pose (MediaPipe stub)."""
 
     def __init__(self, hands: list[HandObservation]) -> None:
         self._hands = hands
 
-    def extract(self, image: np.ndarray) -> list[HandObservation]:
-        return list(self._hands)
+    def extract(self, image: np.ndarray):
+        from core.observations import BodyScene
+
+        return BodyScene(hands=list(self._hands))
 
 
 def _draw_corridor(canvas: np.ndarray) -> None:

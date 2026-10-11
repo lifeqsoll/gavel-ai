@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from train_head import SEED, split_indices, tpr_at_fpr  # noqa: E402
 
 CROP = 224
-REAL_SOURCES = ["coco", "open_images", "wikimedia"]
+REAL_SOURCES = ["coco", "open_images", "wikimedia", "coco_scenes", "wikimedia_scenes"]
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
 

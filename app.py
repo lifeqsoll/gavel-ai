@@ -65,9 +65,47 @@ def _build_pipeline(geometry_method: str, variance_threshold: float) -> GavelPip
     )
 
 
-def _summary_markdown(verdict: Verdict) -> str:
-    if verdict.probability is not None:
-        return _detector_summary(verdict)
+def _layers_markdown(protocol) -> list[str]:
+    lines = ["**Layers**", ""]
+    layers = protocol.layers
+    for key, title in (
+        ("global_layer", "L0 global"),
+        ("anatomy", "L1 anatomy"),
+        ("artifacts", "L2 artifacts"),
+        ("geometry", "L3 geometry"),
+        ("physics", "L4 physics"),
+    ):
+        layer = getattr(layers, key)
+        if layer.status == "skipped":
+            note = layer.reason
+            if layer.name == "physics":
+                note = "not configured yet — does not vote"
+            lines.append(f"- {title}: skipped ({note})")
+        else:
+            score_val = layer.score
+            soft_blocked = (
+                layer.name == "artifacts"
+                and layer.signal
+                and protocol.detector is not None
+                and protocol.detector.decision == "real"
+            )
+            if soft_blocked:
+                vote = "cue only (ignored: L0=real)"
+            elif layer.signal:
+                vote = "VOTES"
+            else:
+                vote = "no vote"
+            score = "n/a" if score_val is None else f"{score_val:.3f}"
+            lines.append(f"- {title}: score={score}, {vote}: {layer.reason}")
+    lines.append("")
+    return lines
+
+
+def _summary_markdown(verdict: Verdict, protocol=None) -> str:
+    if verdict.probability is not None or (protocol is not None and any(
+        getattr(protocol.layers, k).status == "ran" for k in ("global_layer", "anatomy", "artifacts", "geometry", "physics")
+    )):
+        return _detector_summary(verdict, protocol)
     lines = [
         f"### {verdict.label}",
         "",
@@ -83,25 +121,37 @@ def _summary_markdown(verdict: Verdict) -> str:
     return "\n".join(lines)
 
 
-def _detector_summary(verdict: Verdict) -> str:
+def _detector_summary(verdict: Verdict, protocol=None) -> str:
+    score = verdict.probability if verdict.probability is not None else 0.0
+    thr = verdict.high_threshold if verdict.high_threshold is not None else 0.0
+    fusion = verdict.fusion or "n/a"
+    decision = verdict.decision or "n/a"
     lines = [
         f"### {verdict.label}",
         "",
-        f"**Detector score: {verdict.probability * 100:.1f}%**  ",
+        f"**Final decision: `{decision}`** (fusion: `{fusion}`)  ",
+        f"L0 global alone: {score:.3f} (L0 threshold {thr:.3f}). "
+        f"L0 is only one layer. Final label uses fusion A.  ",
         f"Coverage: {verdict.coverage_note}",
         "",
-        "The detector score is not the probability that the image is AI-generated. "
-        "It is a linear probe on frozen CLIP features. It can flag real photos with a polished "
-        "composition, and it has not been validated on the generators you care about. "
-        "Use it as one signal and check the image yourself.",
+        "**Fusion A.** Signal if L0=`generated` OR a hard layer vote (geometry CRITICAL, "
+        "anatomy/physics evidence). Artifacts are a soft cue: they vote with L0 uncertain/generated, "
+        "but cannot overturn L0=`real`. A clean face-free hand close-up (anatomy≤0.1) can veto an "
+        "L0-only false positive. Cyan/green/amber = anatomy map. Only L0 is calibrated.",
+        "",
     ]
+    if protocol is not None:
+        lines += _layers_markdown(protocol)
     if verdict.findings:
         lines += [
-            "",
-            "**Symbolic findings (explanation only, they do not change the verdict)**",
+            "**Findings / layer notes**",
             "",
         ]
         lines += [f"- {finding}" for finding in verdict.findings]
+    else:
+        lines += [
+            "**No symbolic findings.** If an anatomy map is drawn, it is only landmarks.",
+        ]
     return "\n".join(lines)
 
 
@@ -133,7 +183,7 @@ def analyze_image(image_path: str | None, geometry_method: str, variance_thresho
 
     return (
         annotated_rgb,
-        _summary_markdown(verdict),
+        _summary_markdown(verdict, protocol),
         check_rows,
         evidence_rows,
         json.loads(protocol.to_json()),
@@ -145,8 +195,9 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="Gavel AI") as demo:
         gr.Markdown(
             "# Gavel AI\n"
-            "Neuro-symbolic checks for perspective geometry, hand anatomy and lighting. "
-            "Upload an image or pick a sample, then run the analysis."
+            "The learned detector scores the whole image. Cyan/green/amber lines are an anatomy map "
+            "(face, pose, hands) for orientation, not a verdict. Red/yellow marks are symbolic checks. "
+            "None of these set the detector label. Upload an image or pick a sample, then analyze."
         )
         with gr.Row():
             with gr.Column(scale=1):
@@ -159,11 +210,11 @@ def build_app() -> gr.Blocks:
                 )
                 variance_threshold = gr.Slider(
                     minimum=0.005,
-                    maximum=0.1,
-                    value=0.02,
+                    maximum=0.15,
+                    value=0.05,
                     step=0.001,
                     label="Perspective variance threshold (normalized)",
-                    info="Lower values flag weaker line-family conflicts.",
+                    info="Default 0.05. Lower (e.g. 0.02) is aggressive and FPs on real near-parallel edges.",
                 )
                 run_button = gr.Button("Analyze", variant="primary")
                 gr.Examples(

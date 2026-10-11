@@ -1,18 +1,27 @@
 """Aggregate an EvidenceProtocol into a verdict.
 
-When the protocol carries a learned detector result, the verdict is the
-detector decision (generation signal, inconclusive or no signal) at the calibrated thresholds.
-Symbolic evidence is listed as explanation and does not change that label.
+Fusion A (layered classifier):
+    L0 global detector decision OR any layer with signal=True -> generation signal.
+    L0 real and no layer signal -> no signal.
+    Otherwise inconclusive.
 
-Without a detector result, the verdict falls back to a heuristic anomaly score
-built from symbolic evidence. That score is not a calibrated probability.
+Anatomy hand veto: a large clean hand map (no face, no hand WARNING) can suppress an
+L0-only `generated` vote. Stock close-up hands are a known CLIP FP; AI portraits keep
+faces so they are not vetoed. Does not suppress artifacts/geometry votes.
+
+Each layer sets `signal` with its own threshold (models/layer_thresholds.json):
+    L0 ~0.596 (calibrated), artifacts 0.7 (flat-kurtosis), anatomy/physics 0.5,
+    geometry votes on CRITICAL perspective evidence.
+Symbolic evidence is listed as explanation. Layer scores are on protocol.layers.
+Without a detector result, falls back to the heuristic anomaly score.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
-from core.registry import EvidenceProtocol, Severity
+from core.registry import EvidenceProtocol, LayerScore, Severity
 
 # Fallback only: the score is a heuristic, not a calibrated probability.
 # Evidence weights combine as 1 - prod(1 - w), so independent findings add up
@@ -24,6 +33,9 @@ class VerdictConfig:
     critical_weight: float = 0.6
     warning_weight: float = 0.25
     anomalous_threshold: float = 0.5
+    # Suppress L0-only generation when anatomy shows a clean dominant hand (no face).
+    anatomy_veto_max_score: float = 0.1
+    anatomy_veto_min_hand_span: float = 0.12
 
 
 @dataclass(frozen=True)
@@ -35,6 +47,8 @@ class Verdict:
     findings: list[str] = field(default_factory=list)
     probability: float | None = None
     decision: str | None = None
+    high_threshold: float | None = None
+    fusion: str | None = None
 
     @property
     def coverage_note(self) -> str:
@@ -47,8 +61,6 @@ LABEL_CLEAN_PARTIAL = "No anomalies found (limited coverage)"
 LABEL_SUSPICIOUS = "Suspicious"
 LABEL_ANOMALOUS = "Anomalous"
 
-# The learned detector is not reliable enough to name a photo as AI-generated, because it
-# flags some real photos with a polished composition. The labels describe a signal only.
 LABEL_GENERATION_SIGNAL = "Possible generation signal (verify manually)"
 LABEL_INCONCLUSIVE = "Inconclusive"
 LABEL_NO_SIGNAL = "No generation signal"
@@ -60,6 +72,112 @@ _DECISION_LABEL = {
 }
 
 
+def _layer_list(protocol: EvidenceProtocol) -> list[LayerScore]:
+    layers = protocol.layers
+    return [
+        layers.global_layer,
+        layers.anatomy,
+        layers.artifacts,
+        layers.geometry,
+        layers.physics,
+    ]
+
+
+def _layer_votes(layer: LayerScore) -> bool:
+    """Vote only when the layer itself raised signal (per-layer threshold already applied)."""
+    return layer.status == "ran" and bool(layer.signal)
+
+
+def _parse_hand_span(reason: str) -> float:
+    match = re.search(r"hand_span=([0-9.]+)", reason or "")
+    return float(match.group(1)) if match else 0.0
+
+
+def _parse_face_count(reason: str) -> int:
+    match = re.search(r"face=(\d+)", reason or "")
+    return int(match.group(1)) if match else -1
+
+
+def _parse_hand_count(reason: str) -> int:
+    match = re.search(r"hands=(\d+)", reason or "")
+    return int(match.group(1)) if match else 0
+
+
+def anatomy_hand_vetoes_l0(protocol: EvidenceProtocol, config: VerdictConfig) -> bool:
+    """True when a clean, face-free hand close-up should override L0 alone.
+
+    AI portraits almost always have a face mesh, so they keep the L0 vote.
+    """
+    anatomy = protocol.layers.anatomy
+    if anatomy.status != "ran" or anatomy.score is None:
+        return False
+    if anatomy.score > config.anatomy_veto_max_score or anatomy.signal:
+        return False
+    if _parse_hand_count(anatomy.reason) < 1:
+        return False
+    face_n = _parse_face_count(anatomy.reason)
+    if face_n < 0:
+        # Fallback to protocol map when reason is older/incomplete.
+        amap = protocol.anatomy_map
+        face_n = len(amap.face_landmarks_px) if amap else 0
+    if face_n > 0:
+        return False
+    if _parse_hand_span(anatomy.reason) < config.anatomy_veto_min_hand_span:
+        return False
+    return True
+
+
+# Soft cues: useful with L0 uncertain/generated, but alone they FP on real night/texture
+# photos (train platforms, cobblestone). Cannot overturn a calibrated L0_real.
+_SOFT_LAYER_VOTES = frozenset({"artifacts"})
+
+
+def fuse_layers(
+    protocol: EvidenceProtocol, config: VerdictConfig | None = None
+) -> tuple[str, str, str]:
+    """Return (label, decision, fusion_reason) for fusion A."""
+    config = config or VerdictConfig()
+    detector = protocol.detector
+    layer_hits = [
+        layer.name
+        for layer in _layer_list(protocol)
+        if _layer_votes(layer) and layer.name != "global"
+    ]
+    l0_generated = detector is not None and detector.decision == "generated"
+    l0_real = detector is not None and detector.decision == "real"
+    if l0_real:
+        layer_hits = [name for name in layer_hits if name not in _SOFT_LAYER_VOTES]
+    veto = l0_generated and anatomy_hand_vetoes_l0(protocol, config) and not layer_hits
+
+    if detector is None:
+        if layer_hits:
+            return LABEL_GENERATION_SIGNAL, "generated", "layers:" + ",".join(layer_hits)
+        return LABEL_INCONCLUSIVE, "uncertain", "no_detector"
+
+    if veto:
+        return LABEL_NO_SIGNAL, "real", "anatomy_hand_veto"
+
+    if l0_generated or layer_hits:
+        reasons = []
+        if l0_generated:
+            reasons.append("L0")
+        if layer_hits:
+            reasons.append("layers:" + ",".join(layer_hits))
+        return LABEL_GENERATION_SIGNAL, "generated", "+".join(reasons)
+
+    if l0_real and not layer_hits:
+        soft = [
+            layer.name
+            for layer in _layer_list(protocol)
+            if _layer_votes(layer) and layer.name in _SOFT_LAYER_VOTES
+        ]
+        if soft:
+            return LABEL_NO_SIGNAL, "real", "L0_real_soft_ignored:" + ",".join(soft)
+        return LABEL_NO_SIGNAL, "real", "L0_real"
+
+    return LABEL_INCONCLUSIVE, "uncertain", "L0_" + detector.decision
+
+
 def compute_verdict(protocol: EvidenceProtocol, config: VerdictConfig | None = None) -> Verdict:
     config = config or VerdictConfig()
 
@@ -69,20 +187,33 @@ def compute_verdict(protocol: EvidenceProtocol, config: VerdictConfig | None = N
         weight = config.critical_weight if evidence.severity is Severity.CRITICAL else config.warning_weight
         remaining *= 1.0 - weight
         findings.append(f"{evidence.evidence_id} [{evidence.severity.value}] {evidence.description}")
+    for layer in _layer_list(protocol):
+        if layer.status == "ran" and layer.score is not None:
+            votes = _layer_votes(layer) and not (
+                layer.name == "global" and anatomy_hand_vetoes_l0(protocol, config)
+            )
+            findings.append(
+                f"layer.{layer.name} [{('SIGNAL' if votes else 'ok')}] "
+                f"score={layer.score:.3f} {layer.reason}"
+            )
     score = round(1.0 - remaining, 4)
 
     checks_total = len(protocol.checks)
     checks_run = sum(1 for check in protocol.checks if check.status != "skipped")
 
-    if protocol.detector is not None:
+    layers_ready = any(l.status == "ran" for l in _layer_list(protocol))
+    if protocol.detector is not None or layers_ready:
+        label, decision, fusion = fuse_layers(protocol, config)
         return Verdict(
             score=score,
-            label=_DECISION_LABEL[protocol.detector.decision],
+            label=label,
             checks_run=checks_run,
             checks_total=checks_total,
             findings=findings,
-            probability=protocol.detector.probability,
-            decision=protocol.detector.decision,
+            probability=protocol.detector.probability if protocol.detector else None,
+            decision=decision,
+            high_threshold=protocol.detector.high_threshold if protocol.detector else None,
+            fusion=fusion,
         )
 
     if checks_run == 0:

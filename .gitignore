@@ -3,30 +3,53 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Virtual environments
 .venv/
 .venv*/
+venv/
+
+# Gradio / local run
+.gradio/
+
+# Design notes / agent specs (local only)
+/docs/
 
 # Generated outputs
 /output/
 /results/
+*.log
 
-# Model weights and datasets (never committed)
+# Datasets and large caches (never commit)
+/data/
+/gavel-data/
+*.parquet
+*.npz
+!models/detector_weights.npz
+
+# Model experiments and backups (ship only detector_weights + thresholds + metrics + layer_thresholds)
+/models/exp_*/
+/models/layers_*/
+/models/prev_*/
+/models/cnn*/
+/models/cnn_*/
 *.pt
 *.pth
 *.safetensors
 *.onnx
 *.ckpt
-/data/
-/gavel-data/
 
 # Editor and OS
 .idea/
 .vscode/
 .DS_Store
+*~
 
-# Not cleared for redistribution yet
+# Sample AI images: license unclear — keep local only
 /samples/ai_generated/
-/models/exp_*/
-/models/layers_*/
+
+# Local scratch
+/tmp/
+/testtttt/

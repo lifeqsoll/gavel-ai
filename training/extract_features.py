@@ -18,6 +18,7 @@ import argparse
 import glob
 import io
 import multiprocessing as mp
+import re
 import sys
 from pathlib import Path
 from typing import Iterator
@@ -34,9 +35,19 @@ MODEL_NAME = "ViT-L-14"
 PRETRAINED = "laion2b_s32b_b82k"
 
 # Generators whose outputs carry permissive terms and may be used for training.
-TRAIN_GENERATORS = {"nano-banana", "FLUX-schnell"}
+TRAIN_GENERATORS = {
+    "nano-banana",
+    "FLUX-schnell",
+    "ecommerce-cc0",
+    "hmnsh-fake",
+    "omnigen",
+    "ai-vs-real",
+    "diffusiondb",
+    "synthetic-characters",
+}
 # FLUX-dev is non-commercial; it is excluded from all use.
 EXCLUDED_GENERATORS = {"FLUX-dev"}
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 _PREPROCESS = None
 
@@ -85,21 +96,204 @@ def iter_open_images(root: Path) -> Iterator[tuple[bytes, int, str]]:
                 yield _image_bytes(cell), 0, "open-images"
 
 
+def _iter_wikimedia_dir(base: Path, gen: str) -> Iterator[tuple[bytes, int, str]]:
+    import csv
+
+    with (base / "manifest.csv").open(encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            yield (base / "images" / row["file"]).read_bytes(), 0, gen
+
+
 def iter_wikimedia(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    yield from _iter_wikimedia_dir(root / "real/wikimedia", "wikimedia")
+
+
+def iter_wikimedia_scenes(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """Scene photos, minus any file already in the base wikimedia manifest (by title)."""
     import csv
 
     base = root / "real/wikimedia"
     with (base / "manifest.csv").open(encoding="utf-8") as handle:
+        known_titles = {row["title"] for row in csv.DictReader(handle)}
+    scenes = root / "real/wikimedia_scenes"
+    with (scenes / "manifest.csv").open(encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
-            yield (base / "images" / row["file"]).read_bytes(), 0, "wikimedia"
+            if row["title"] in known_titles:
+                continue
+            yield (scenes / "images" / row["file"]).read_bytes(), 0, "wikimedia-scenes"
+
+
+def iter_wikimedia_faces(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """Wikimedia face/portrait close-ups (hard negatives for polished-skin FP)."""
+    yield from _iter_wikimedia_dir(root / "real/wikimedia_faces", "wikimedia-faces")
+
+
+def iter_wikimedia_extra(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """Extra Wikimedia reals (image dir; no manifest required)."""
+    yield from _iter_image_dir(root / "real/wikimedia_extra/images", "wikimedia-extra")
+
+
+def iter_real_hands(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """User-provided real hand / close-up hard negatives.
+
+    Drop images under ``real/hands/`` (any nesting). Used after you collect data;
+    see ``training/retrain_when_hands_ready.sh``.
+    """
+    yield from _iter_image_dir(root / "real/hands", "real-hands")
+
+
+# COCO rows used by the "coco" source (--limit 20000 in the first extraction).
+COCO_BASE_ROWS = 20000
+
+# Caption keywords for real scenes that the first COCO sample under-represents:
+# people, streets and roads, houses and buildings.
+SCENE_PATTERN = re.compile(
+    r"\b(person|people|man|men|woman|women|child|children|kid|kids|boy|boys|girl|girls|family|"
+    r"street|streets|road|roads|highway|house|houses|home|homes|building|buildings|apartment|"
+    r"apartments|town|city|neighborhood|village)\b"
+)
+
+
+def iter_coco_scenes(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """Real COCO photos whose caption mentions a scene keyword, excluding the "coco" source rows.
+
+    The "coco" source is the first COCO_BASE_ROWS rows in shard order, so those rows and any
+    other row of the same image are skipped. Each image is yielded at most once.
+    """
+    paths = sorted(glob.glob(str(root / "real/coco/data/*.parquet")))
+    used_ids: set[int] = set()
+    seen = 0
+    for path in paths:
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=512, columns=["cocoid"]):
+            for cid in batch.column("cocoid").to_pylist():
+                if seen >= COCO_BASE_ROWS:
+                    break
+                used_ids.add(cid)
+                seen += 1
+    seen_ids: set[int] = set(used_ids)
+    for path in paths:
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=256, columns=["cocoid", "sentences", "image"]):
+            cocoids = batch.column("cocoid").to_pylist()
+            captions = batch.column("sentences").to_pylist()
+            images = batch.column("image").to_pylist()
+            for cid, sent, img in zip(cocoids, captions, images):
+                if cid in seen_ids:
+                    continue
+                caption = (sent or {}).get("raw", "") or ""
+                if not SCENE_PATTERN.search(caption.lower()):
+                    continue
+                seen_ids.add(cid)
+                yield _image_bytes(img), 0, "coco-scenes"
+
+
+def _iter_image_dir(directory: Path, generator: str, min_side: int = 64) -> Iterator[tuple[bytes, int, str]]:
+    """Yield RGB-capable images from a directory tree. Tiny files (below min_side) are skipped."""
+    if not directory.is_dir():
+        return
+    for path in sorted(directory.rglob("*")):
+        if path.suffix.lower() not in IMAGE_SUFFIXES or not path.is_file():
+            continue
+        try:
+            with Image.open(path) as img:
+                width, height = img.size
+                if min(width, height) < min_side:
+                    continue
+            yield path.read_bytes(), 1, generator
+        except Exception:
+            continue
+
+
+def iter_ecommerce_cc0(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """AI-generated ecommerce photos (CC0). Skips README and annotation files."""
+    base = root / "generated/ecommerce-cc0"
+    for child in sorted(base.iterdir()) if base.is_dir() else []:
+        if child.is_dir() and child.name not in {".cache", ".git"}:
+            yield from _iter_image_dir(child, "ecommerce-cc0")
+
+
+def iter_hmnsh_fake(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """FAKE split of hmnshudhmn24/real-fake-ai-generated-art-images (MIT)."""
+    yield from _iter_image_dir(root / "generated/hmnsh-fake/Data/FAKE", "hmnsh-fake")
+
+
+def iter_omnigen(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """orbisAI/OmniGen AI images (Apache-2.0)."""
+    yield from _iter_image_dir(root / "generated/omnigen/images", "omnigen")
+
+
+def iter_ai_vs_real_fake(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """MIT Parveshiiii/AI-vs-Real, binary_label=1 (AI)."""
+    for path in sorted(glob.glob(str(root / "generated/ai-vs-real/data/*.parquet"))):
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=64, columns=["image", "binary_label"]):
+            for cell, label in zip(
+                batch.column("image").to_pylist(), batch.column("binary_label").to_pylist()
+            ):
+                if int(label) != 1:
+                    continue
+                yield _image_bytes(cell), 1, "ai-vs-real"
+
+
+def iter_ai_vs_real_real(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """MIT Parveshiiii/AI-vs-Real, binary_label=0 (real photos)."""
+    for path in sorted(glob.glob(str(root / "generated/ai-vs-real/data/*.parquet"))):
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=64, columns=["image", "binary_label"]):
+            for cell, label in zip(
+                batch.column("image").to_pylist(), batch.column("binary_label").to_pylist()
+            ):
+                if int(label) != 0:
+                    continue
+                yield _image_bytes(cell), 0, "ai-vs-real-real"
+
+
+def iter_diffusiondb(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """DiffusionDB / svjack random subset (CC0): images/ or parquet shards."""
+    base = root / "generated/diffusiondb-10k"
+    images = base / "images"
+    if images.is_dir() and any(images.iterdir()):
+        yield from _iter_image_dir(images, "diffusiondb")
+        return
+    for path in sorted(glob.glob(str(base / "data/*.parquet"))):
+        pf = pq.ParquetFile(path)
+        cols = set(pf.schema_arrow.names)
+        if "image" not in cols:
+            continue
+        for batch in pf.iter_batches(batch_size=32, columns=["image"]):
+            for cell in batch.column("image").to_pylist():
+                yield _image_bytes(cell), 1, "diffusiondb"
+
+
+def iter_synthetic_characters(root: Path) -> Iterator[tuple[bytes, int, str]]:
+    """AbstractPhil/synthetic-characters (MIT), generated faces/characters."""
+    base = root / "generated/synthetic-characters"
+    for path in sorted(glob.glob(str(base / "**/*.parquet"), recursive=True)):
+        pf = pq.ParquetFile(path)
+        cols = set(pf.schema_arrow.names)
+        image_col = "image" if "image" in cols else ("img" if "img" in cols else None)
+        if image_col is None:
+            continue
+        for batch in pf.iter_batches(batch_size=32, columns=[image_col]):
+            for cell in batch.column(image_col).to_pylist():
+                yield _image_bytes(cell), 1, "synthetic-characters"
 
 
 SOURCES = {
     "nano_banana": iter_nano_banana,
     "cf_commercial": iter_cf_commercial,
     "coco": iter_coco,
+    "coco_scenes": iter_coco_scenes,
     "open_images": iter_open_images,
     "wikimedia": iter_wikimedia,
+    "wikimedia_scenes": iter_wikimedia_scenes,
+    "wikimedia_faces": iter_wikimedia_faces,
+    "wikimedia_extra": iter_wikimedia_extra,
+    "real_hands": iter_real_hands,
+    "ecommerce_cc0": iter_ecommerce_cc0,
+    "hmnsh_fake": iter_hmnsh_fake,
+    "omnigen": iter_omnigen,
+    "ai_vs_real_fake": iter_ai_vs_real_fake,
+    "ai_vs_real_real": iter_ai_vs_real_real,
+    "diffusiondb": iter_diffusiondb,
+    "synthetic_characters": iter_synthetic_characters,
 }
 
 

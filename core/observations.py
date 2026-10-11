@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -32,6 +32,19 @@ class HandObservation:
             raise ValueError(f"landmarks_3d must have shape (21, 3), got {self.landmarks_3d.shape}")
         if self.landmarks_px.shape != (NUM_HAND_LANDMARKS, 2):
             raise ValueError(f"landmarks_px must have shape (21, 2), got {self.landmarks_px.shape}")
+
+
+@dataclass(frozen=True)
+class BodyScene:
+    """Perception output for the anatomy map: hands plus optional face and pose landmarks.
+
+    face_landmarks_px: MediaPipe Face Mesh points in pixels (empty if no face).
+    pose_landmarks_px: 33 pose points; a point is None when visibility is below the agent threshold.
+    """
+
+    hands: list[HandObservation] = field(default_factory=list)
+    face_landmarks_px: list[Point2D] = field(default_factory=list)
+    pose_landmarks_px: list[Point2D | None] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-PROTOCOL_VERSION = "1.1.0"
+PROTOCOL_VERSION = "1.3.0"
 
 Point2D = tuple[float, float]
 BBox2D = tuple[float, float, float, float]  # (x1, y1, x2, y2) in pixels
@@ -158,12 +158,45 @@ class DetectorResult(_Schema):
     low_threshold: float = Field(ge=0.0, le=1.0)
 
 
+class HandMap(_Schema):
+    handedness: str
+    landmarks_px: list[Point2D] = Field(default_factory=list)
+
+
+class AnatomyMap(_Schema):
+    """Landmark map for the overlay only. Not evidence and not part of the verdict."""
+
+    face_landmarks_px: list[Point2D] = Field(default_factory=list)
+    pose_landmarks_px: list[Point2D | None] = Field(default_factory=list)
+    hands: list[HandMap] = Field(default_factory=list)
+
+
+class LayerScore(_Schema):
+    """One classifier layer: score is a generation signal in [0, 1], not a probability."""
+
+    name: Literal["global", "anatomy", "artifacts", "geometry", "physics"]
+    status: Literal["ran", "skipped"] = "skipped"
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    signal: bool = False
+    reason: str = ""
+
+
+class LayerScores(_Schema):
+    global_layer: LayerScore = Field(default_factory=lambda: LayerScore(name="global"))
+    anatomy: LayerScore = Field(default_factory=lambda: LayerScore(name="anatomy"))
+    artifacts: LayerScore = Field(default_factory=lambda: LayerScore(name="artifacts"))
+    geometry: LayerScore = Field(default_factory=lambda: LayerScore(name="geometry"))
+    physics: LayerScore = Field(default_factory=lambda: LayerScore(name="physics"))
+
+
 class EvidenceProtocol(_Schema):
     protocol_version: str = PROTOCOL_VERSION
     image: ImageMetadata
     checks: list[CheckRecord] = Field(default_factory=list)
     evidences: list[Evidence] = Field(default_factory=list)
     detector: DetectorResult | None = None
+    anatomy_map: AnatomyMap | None = None
+    layers: LayerScores = Field(default_factory=LayerScores)
 
     @property
     def has_critical(self) -> bool:

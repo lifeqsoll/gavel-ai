@@ -7,6 +7,8 @@ are excluded so that they stay usable as an untouched final check.
 
 Usage:
     python training/fetch_wikimedia.py --out /mnt/disk-e/gavel-data/real/wikimedia --target 1500
+    python training/fetch_wikimedia.py --out /mnt/disk-e/gavel-data/real/wikimedia_scenes \
+        --queries scenes --target 600
 """
 
 from __future__ import annotations
@@ -36,6 +38,16 @@ QUERIES = [
     "market stall", "sports match photo", "football player", "hands holding object", "close-up of hands",
     "bicycle photo", "car on road", "crowd of people", "classroom photo", "office workspace",
     "vegetables market", "flowers close-up", "coffee cup photo", "rain on window", "snow landscape",
+]
+
+
+# Queries for the scene data: people, roads and streets, houses and buildings.
+SCENE_QUERIES = [
+    "people walking on a street", "portrait of a man", "portrait of a woman", "family photo outdoors",
+    "people in a city", "crowd on the street", "pedestrians crossing a road", "group of people photo",
+    "country road", "road with cars", "highway photo", "road through a village", "street with houses",
+    "suburban house exterior", "house in a village", "residential street houses", "apartment building photo",
+    "old house facade", "wooden house in forest", "farmhouse photo", "row of houses", "city street buildings",
 ]
 
 
@@ -80,7 +92,9 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--target", type=int, default=1500)
     parser.add_argument("--per-query", type=int, default=50)
+    parser.add_argument("--queries", choices=["default", "scenes"], default="default")
     args = parser.parse_args()
+    queries = SCENE_QUERIES if args.queries == "scenes" else QUERIES
 
     image_dir = args.out / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
@@ -88,7 +102,7 @@ def main() -> None:
     seen: set[str] = set()
     rows: list[dict] = []
 
-    for query in QUERIES:
+    for query in queries:
         if len(rows) >= args.target:
             break
         for page in search_files(query, args.per_query):
