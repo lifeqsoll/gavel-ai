@@ -31,6 +31,7 @@ from core.registry import (
 )
 from core.validators.anatomy import AnatomyValidator
 from core.validators.artifacts import ArtifactValidator
+from core.validators.edges import analyze_edges
 from core.validators.halves import analyze_halves
 from core.validators.perspective import PerspectiveValidator
 from core.validators.shadows import ShadowValidator
@@ -120,6 +121,7 @@ class GavelPipeline:
             )
         detector, layers.global_layer = self._run_detector(image, checks, anatomy_map)
         layers.global_layer = self._attach_halves_probe(image, layers.global_layer)
+        layers.global_layer = self._attach_edges_probe(image, layers.global_layer)
 
         protocol = EvidenceProtocol(
             image=ImageMetadata(file_name=image_name, width=width, height=height),
@@ -130,6 +132,28 @@ class GavelPipeline:
             layers=layers,
         )
         return PipelineResult(protocol=protocol, annotated_image=render_overlay(image, protocol))
+
+    @staticmethod
+    def _attach_edges_probe(image: np.ndarray, global_layer: LayerScore) -> LayerScore:
+        """Annotate L0 layer with LSD edge-coherence density (H10 soft cue)."""
+        report = analyze_edges(image)
+        metrics = dict(global_layer.metrics or {})
+        metrics["edge_density"] = float(report.density)
+        metrics["edge_long_count"] = float(report.long_count)
+        metrics["edge_segment_count"] = float(report.segment_count)
+        metrics["edge_coherent"] = 1.0 if report.disagree else 0.0
+        reason = global_layer.reason or ""
+        reason += f" edge_dens={report.density:.4f}"
+        if report.disagree:
+            reason += " edge_coherent"
+        return LayerScore(
+            name=global_layer.name,
+            status=global_layer.status,
+            score=global_layer.score,
+            signal=global_layer.signal,
+            reason=reason.strip(),
+            metrics=metrics,
+        )
 
     @staticmethod
     def _attach_halves_probe(image: np.ndarray, global_layer: LayerScore) -> LayerScore:
@@ -343,6 +367,7 @@ class GavelPipeline:
         hand_probs: list[float] = []
         face_prob: float | None = None
         face_lap: float | None = None
+        face_clip: float | None = None
         score_bbox = getattr(self.learned_detector, "score_bbox", None)
         h, w = image.shape[:2]
         if callable(score_bbox) and anatomy_map is not None:
@@ -362,11 +387,13 @@ class GavelPipeline:
                     view_scores["face_0"] = face_prob
                     view_boxes["face_0"] = fbox
                     # Plastic / over-smoothed skin cue (AI portraits often lap << 20).
+                    # H11: near-sat clipping on the face strengthens the plastic lean.
                     x1, y1, x2, y2 = (int(v) for v in fbox)
                     crop = image[y1:y2, x1:x2]
                     if crop.size >= 500:
                         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
                         face_lap = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+                        face_clip = float(np.mean((crop >= 250) | (crop <= 5)))
                 except _STAGE_ERRORS as exc:
                     logger.warning("face crop L0 skipped: %s", exc)
 
@@ -432,10 +459,17 @@ class GavelPipeline:
             reason += " tiles_disagree"
         if hand_probs:
             reason += f" hand_crop_min={min(hand_probs):.3f}"
+        plastic = False
         if face_lap is not None:
             reason += f" face_lap={face_lap:.1f}"
-            if face_lap < 20.0:
+            # Extreme smooth skin, or milder smooth + heavy clipping (H11).
+            plastic = face_lap < 20.0 or (
+                face_clip is not None and face_lap < 40.0 and face_clip >= 0.05
+            )
+            if plastic:
                 reason += " plastic_skin"
+            if face_clip is not None:
+                reason += f" face_clip={face_clip:.3f}"
         metrics = {f"view_{k}": float(v) for k, v in view_scores.items()}
         metrics["views_disagree"] = 1.0 if views_disagree else 0.0
         if hand_probs:
@@ -445,7 +479,9 @@ class GavelPipeline:
             metrics["face_crop"] = float(face_prob)
         if face_lap is not None:
             metrics["face_laplacian"] = float(face_lap)
-            metrics["plastic_skin"] = 1.0 if face_lap < 20.0 else 0.0
+            metrics["plastic_skin"] = 1.0 if plastic else 0.0
+        if face_clip is not None:
+            metrics["face_clip_frac"] = float(face_clip)
         return detector, LayerScore(
             name="global",
             status="ran",

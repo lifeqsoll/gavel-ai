@@ -84,6 +84,10 @@ def test_wide_image_adds_left_right_and_quadrants():
     tall_names = [name for name, _tile, _box in LearnedDetector._views(tall)]
     assert tall_names[0] == "full"
     assert tall_names[1:] == ["q00", "q01", "q10", "q11"]
+    with_center = [n for n, _, _ in LearnedDetector._views(tall, include_center=True, include_quads=False)]
+    assert with_center == ["full", "center"]
+    no_quads = [n for n, _, _ in LearnedDetector._views(wide, include_quads=False)]
+    assert no_quads == ["full", "left", "right"]
 
 
 def test_plastic_skin_with_uncertain_l0():
@@ -117,6 +121,39 @@ def test_plastic_skin_with_uncertain_l0():
     assert decision == "generated"
     assert label == LABEL_GENERATION_SIGNAL
     assert fusion == "L0_uncertain+plastic_skin"
+
+
+def test_edge_coherent_with_uncertain_l0():
+    from core.registry import DetectorResult, EvidenceProtocol, ImageMetadata, LayerScore, LayerScores
+    from core.verdict import LABEL_GENERATION_SIGNAL, fuse_layers
+    from tests.test_verdict import PASSED
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="edges.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.3,
+            logit=-0.8,
+            decision="uncertain",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global",
+                status="ran",
+                score=0.3,
+                signal=False,
+                metrics={"edge_coherent": 1.0, "edge_density": 0.012},
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "generated"
+    assert label == LABEL_GENERATION_SIGNAL
+    assert fusion == "L0_uncertain+edge_coherent"
 
 
 def _fake_detection(decision: str) -> DetectorResult:

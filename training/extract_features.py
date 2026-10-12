@@ -130,17 +130,70 @@ def iter_wikimedia_faces(root: Path) -> Iterator[tuple[bytes, int, str]]:
 
 def iter_wikimedia_extra(root: Path) -> Iterator[tuple[bytes, int, str]]:
     """Extra Wikimedia reals (image dir; no manifest required)."""
-    yield from _iter_image_dir(root / "real/wikimedia_extra/images", "wikimedia-extra")
+    yield from _iter_image_dir(root / "real/wikimedia_extra/images", "wikimedia-extra", label=0)
 
 
 def iter_real_hands(root: Path) -> Iterator[tuple[bytes, int, str]]:
     """User-provided real hand / close-up hard negatives.
 
     Drop images under ``real/hands/`` (any nesting). Used after you collect data;
-    see ``training/retrain_when_hands_ready.sh``.
-    """
-    yield from _iter_image_dir(root / "real/hands", "real-hands")
+    see ``training/retrain_when_hands_ready.sh``. Skips ``bushon*`` dirs so
+    bushon_eval stays a leave-out pack for ``eval_hardneg_local.py``.
+    Also streams ``11k_hands`` parquet shards (HF image column).
 
+    Env ``REAL_HANDS_PER_DIR_LIMIT`` (default 3000): cap images per HaGRID gesture
+    folder so R2 retrain finishes in hours, not a full ~550k overnight pass.
+    Set to 0 for unlimited.
+    """
+    import os
+
+    per_dir = int(os.environ.get("REAL_HANDS_PER_DIR_LIMIT", "3000"))
+    hands_root = root / "real/hands"
+    # Wiki / sample / misc image trees (not HaGRID bulk).
+    for child in sorted(hands_root.iterdir()) if hands_root.is_dir() else []:
+        if not child.is_dir():
+            continue
+        if child.name.startswith("bushon") or child.name in {".cache", ".git"}:
+            continue
+        if child.name.startswith("hagrid"):
+            continue
+        if child.name == "11k_hands":
+            continue
+        yield from _iter_image_dir(child, "real-hands", label=0)
+
+    # HaGRID 512: stratified per gesture class.
+    hagrid = hands_root / "hagrid_512" / "HaGRIDv2_dataset_512"
+    if hagrid.is_dir():
+        try:
+            gesture_names = sorted(os.listdir(hagrid))
+        except OSError:
+            gesture_names = []
+        for name in gesture_names:
+            gesture = hagrid / name
+            try:
+                if not gesture.is_dir():
+                    continue
+            except OSError:
+                # Corrupt / unreadable folder (seen: HaGRID ``grip`` → EINVAL).
+                continue
+            n = 0
+            for item in _iter_image_dir(gesture, "real-hands-hagrid", label=0):
+                yield item
+                n += 1
+                if per_dir > 0 and n >= per_dir:
+                    break
+
+    # Optional smaller sample zip tree.
+    sample = hands_root / "hagrid_sample"
+    if sample.is_dir():
+        yield from _iter_image_dir(
+            sample, "real-hands-hagrid-sample", label=0, skip_name_prefixes=(".cache",)
+        )
+
+    for path in sorted(glob.glob(str(root / "real/hands/11k_hands/data/*.parquet"))):
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=64, columns=["image"]):
+            for cell in batch.column("image").to_pylist():
+                yield _image_bytes(cell), 0, "real-hands-11k"
 
 # COCO rows used by the "coco" source (--limit 20000 in the first extraction).
 COCO_BASE_ROWS = 20000
@@ -186,21 +239,53 @@ def iter_coco_scenes(root: Path) -> Iterator[tuple[bytes, int, str]]:
                 yield _image_bytes(img), 0, "coco-scenes"
 
 
-def _iter_image_dir(directory: Path, generator: str, min_side: int = 64) -> Iterator[tuple[bytes, int, str]]:
-    """Yield RGB-capable images from a directory tree. Tiny files (below min_side) are skipped."""
+def _iter_image_dir(
+    directory: Path,
+    generator: str,
+    *,
+    label: int = 1,
+    min_side: int = 64,
+    skip_name_prefixes: tuple[str, ...] = (),
+) -> Iterator[tuple[bytes, int, str]]:
+    """Yield RGB-capable images from a directory tree. Tiny files (below min_side) are skipped.
+
+    Streams via ``os.walk`` (no ``sorted(rglob)``) so HaGRID-scale trees (~500k+)
+    start encoding immediately instead of stalling on a full path materialization.
+    """
+    import os
+
     if not directory.is_dir():
         return
-    for path in sorted(directory.rglob("*")):
-        if path.suffix.lower() not in IMAGE_SUFFIXES or not path.is_file():
-            continue
-        try:
-            with Image.open(path) as img:
-                width, height = img.size
-                if min(width, height) < min_side:
+    for dirpath, dirnames, filenames in os.walk(directory):
+        # Prune caches / leave-out packs early.
+        dirnames[:] = [
+            d
+            for d in sorted(dirnames)
+            if d not in {".cache", ".git"}
+            and not any(d.startswith(pref) for pref in skip_name_prefixes)
+        ]
+        if skip_name_prefixes:
+            parts = Path(dirpath).parts
+            if any(part.startswith(pref) for part in parts for pref in skip_name_prefixes):
+                dirnames[:] = []
+                continue
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            if path.suffix.lower() not in IMAGE_SUFFIXES:
+                continue
+            try:
+                # HaGRID 512 jpgs are known-good; skip PIL header probe when min_side
+                # is the default and suffix is jpeg — still validate other trees.
+                if min_side <= 64 and path.suffix.lower() in {".jpg", ".jpeg"}:
+                    yield path.read_bytes(), label, generator
                     continue
-            yield path.read_bytes(), 1, generator
-        except Exception:
-            continue
+                with Image.open(path) as img:
+                    width, height = img.size
+                    if min(width, height) < min_side:
+                        continue
+                yield path.read_bytes(), label, generator
+            except Exception:
+                continue
 
 
 def iter_ecommerce_cc0(root: Path) -> Iterator[tuple[bytes, int, str]]:
@@ -208,18 +293,17 @@ def iter_ecommerce_cc0(root: Path) -> Iterator[tuple[bytes, int, str]]:
     base = root / "generated/ecommerce-cc0"
     for child in sorted(base.iterdir()) if base.is_dir() else []:
         if child.is_dir() and child.name not in {".cache", ".git"}:
-            yield from _iter_image_dir(child, "ecommerce-cc0")
+            yield from _iter_image_dir(child, "ecommerce-cc0", label=1)
 
 
 def iter_hmnsh_fake(root: Path) -> Iterator[tuple[bytes, int, str]]:
     """FAKE split of hmnshudhmn24/real-fake-ai-generated-art-images (MIT)."""
-    yield from _iter_image_dir(root / "generated/hmnsh-fake/Data/FAKE", "hmnsh-fake")
+    yield from _iter_image_dir(root / "generated/hmnsh-fake/Data/FAKE", "hmnsh-fake", label=1)
 
 
 def iter_omnigen(root: Path) -> Iterator[tuple[bytes, int, str]]:
     """orbisAI/OmniGen AI images (Apache-2.0)."""
-    yield from _iter_image_dir(root / "generated/omnigen/images", "omnigen")
-
+    yield from _iter_image_dir(root / "generated/omnigen/images", "omnigen", label=1)
 
 def iter_ai_vs_real_fake(root: Path) -> Iterator[tuple[bytes, int, str]]:
     """MIT Parveshiiii/AI-vs-Real, binary_label=1 (AI)."""
@@ -250,7 +334,7 @@ def iter_diffusiondb(root: Path) -> Iterator[tuple[bytes, int, str]]:
     base = root / "generated/diffusiondb-10k"
     images = base / "images"
     if images.is_dir() and any(images.iterdir()):
-        yield from _iter_image_dir(images, "diffusiondb")
+        yield from _iter_image_dir(images, "diffusiondb", label=1)
         return
     for path in sorted(glob.glob(str(base / "data/*.parquet"))):
         pf = pq.ParquetFile(path)
@@ -397,7 +481,7 @@ def main() -> None:
                 if len(tensors) >= args.batch_size:
                     encode(tensors, metas)
                     tensors, metas = [], []
-                    if seen % 2560 == 0:
+                    if seen % 1280 == 0:
                         print(f"{args.source}: {seen} images", flush=True)
                 if args.limit and seen >= args.limit:
                     done = True

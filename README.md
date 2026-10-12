@@ -70,11 +70,11 @@ gavel-ai/
 │   ├── verdict.py          Fusion A + anatomy hand veto + soft-artifact rule
 │   ├── normalize.py        shared resize / center-crop / JPEG q90 (train = infer)
 │   ├── registry.py         Pydantic EvidenceProtocol, LayerScores, DetectorResult
-│   └── validators/         perspective, anatomy (2D), artifacts, shadows
+│   └── validators/         perspective, anatomy (2D), artifacts, halves, edges, shadows
 ├── visualizer/overlay.py   cyan/green/amber map + red/yellow symbolic marks
 ├── app.py                  Gradio UI
 ├── analyze.py              CLI batch
-├── training/               extract features, train probe, sample gate, calibrate artifacts
+├── training/               extract / train / sample+hardneg gates / calibrate artifacts
 ├── models/                 shipped weights + thresholds (experiments gitignored)
 ├── assets/readme/          UI screenshots
 ├── samples/real/           licensed real test photos
@@ -148,9 +148,11 @@ Overlay banner shows **Final** decision (after fusion) separately from raw L0 sc
 - Head: logistic regression on L2-normalized embeddings.
 - Preprocess: `normalize_pil` — scale so min side = 512, center-crop 448, JPEG quality 90 (same in training and inference).
 - Thresholds (shipped): **high ≈ 0.596** (≈1% FPR on real calibration), **low ≈ 0.066**.
-- Wide images: also score left/right halves; keep max probability (`view=…`, `tiles=[…]` in the layer reason).
+- Wide images: also score left/right halves; keep max probability.
+- **2×2 quadrants** when L0 is still in the uncertain band (skip when already decisive — latency).
+- Extra probes: **face crop** (primary max), **hand crops** (veto / disagree only), **halves** composite (diptych cue), **plastic skin** (face Laplacian ± clipping), **edge coherence** (LSD density soft cue).
 
-L0 is a **semantic** probe, not a pixel-forensics detector. It can false-positive on polished stock close-ups and false-negative on OOD generators or painting|AI diptychs until more data is trained in.
+L0 is a **semantic** probe, not a pixel-forensics detector. It can false-positive on polished stock close-ups and false-negative on OOD generators; diptychs and local AI patches rely on the probes above until harder negatives are trained in.
 
 ## Layers and fusion
 
@@ -161,6 +163,10 @@ L0 is a **semantic** probe, not a pixel-forensics detector. It can false-positiv
 | Anatomy hand WARNING | Votes (score ≥ 0.5) |
 | Artifacts high score | Soft vote only if L0 is not firmly `real` |
 | Hand veto | Hands present, no face, anatomy ≤ 0.1, large `hand_span` → suppress L0-only FP |
+| Hand-crop disagree | Full L0 vs hand crop clash → `uncertain` |
+| Halves / plastic / edges | Soft generation lean on diptych, plastic face, or over-coherent edges when L0 is not already generated |
+
+Primary L0 = max over full / left-right / quads / face (hand crops excluded from the max).
 
 UI labels:
 
@@ -184,8 +190,12 @@ Training data and feature caches live **outside** the git repo (e.g. `/mnt/disk-
 Do **not** mix `ai_vs_real_real` into training reals — earlier runs pushed high thr ~0.9 and flooded `uncertain`.
 
 ```bash
-# Score checked-in samples with shipped or candidate weights
+# Checked-in samples (+ optional leave-out bushon_eval / wiki on disk-E)
 python training/eval_samples_gate.py
+python training/eval_hardneg_local.py
+python training/eval_faces_local.py   # plastic_skin sanity on real faces
+
+# Candidate weights after a hands retrain
 python training/eval_samples_gate.py \
   --weights models/exp_hands/detector_weights.npz \
   --thresholds models/exp_hands/thresholds.json \
@@ -194,10 +204,10 @@ python training/eval_samples_gate.py \
 # Recalibrate artifact vote threshold on on-disk Wikimedia reals
 python training/calibrate_artifacts.py --root /mnt/disk-e/gavel-data
 
-# After you collect real hand/close-up photos into $ROOT/real/hands/
+# After HaGRID / wiki / 11k hands land under $ROOT/real/hands/ (bushon* skipped)
 python training/extract_features.py --source real_hands --root "$ROOT"
 ./training/retrain_when_hands_ready.sh
-# Ship only if GATE PASS and metrics look sane (copy weights/thresholds/metrics manually)
+# Ship only if GATE PASS (+ hardneg) and metrics look sane
 ```
 
 ## Known limitations
@@ -206,7 +216,7 @@ python training/extract_features.py --source real_hands --root "$ROOT"
 2. **Artifacts** — kurtosis still lights up on some night/texture scenes; soft rule prevents overturning L0=`real`.
 3. **Geometry** — aggressive thresholds (0.02) FP on near-parallel real edges; default is **0.05**.
 4. **Physics** — skipped (no scene provider).
-5. **OOD AI** — some diptych / unusual generators still look `real` on L0.
+5. **OOD AI** — remaining semantic FP/FN without new weights; diptychs / local AI patches are partly covered by halves / quads / edges probes.
 6. **Not proof** — do not use as sole evidence for moderation, legal, or journalism claims.
 
 ## Tests

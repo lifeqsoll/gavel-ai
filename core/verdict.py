@@ -271,6 +271,7 @@ def fuse_layers(
 
     # Plastic face skin (very low Laplacian) + L0 uncertain → generation lean.
     # Extreme threshold (lap<20) calibrated on ai_08 (lap≈5); avoids normal photos.
+    # H11 expands plastic via face clipping in pipeline metrics.
     if (
         detector is not None
         and detector.decision == "uncertain"
@@ -287,6 +288,15 @@ def fuse_layers(
             return LABEL_GENERATION_SIGNAL, "generated", f"L0_{detector.decision}+halves_composite"
         if l0_real:
             return LABEL_INCONCLUSIVE, "uncertain", "L0_real_halves_disagree"
+
+    # H10: over-coherent straight edges + L0 uncertain → generation lean.
+    if (
+        detector is not None
+        and detector.decision == "uncertain"
+        and not hard_hits
+        and _edge_coherent_cue(protocol)
+    ):
+        return LABEL_GENERATION_SIGNAL, "generated", "L0_uncertain+edge_coherent"
 
     if l0_real and not layer_hits:
         if soft_hits:
@@ -317,6 +327,12 @@ def _halves_composite_cue(protocol: EvidenceProtocol) -> bool:
 def _plastic_skin_cue(protocol: EvidenceProtocol) -> bool:
     metrics = protocol.layers.global_layer.metrics or {}
     flag = _metric_float(metrics, "plastic_skin")
+    return bool(flag and flag >= 1.0)
+
+
+def _edge_coherent_cue(protocol: EvidenceProtocol) -> bool:
+    metrics = protocol.layers.global_layer.metrics or {}
+    flag = _metric_float(metrics, "edge_coherent")
     return bool(flag and flag >= 1.0)
 
 

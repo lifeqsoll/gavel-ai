@@ -21,7 +21,7 @@ English: [README.md](README.md)
 - **`anatomy_hand_veto`** — чистая крупная рука без лица (anatomy ≤ 0.1) может снять L0-only FP (кейс gym hand).
 - **Soft artifacts** — игнорируются, если L0 уже сказал `real` (ночные/текстурные фото).
 
-Широкие диптихи: дополнительно считаются left/right тайлы, берётся max по L0.
+Широкие диптихи: left/right тайлы + max по L0. Квадранты 2×2 — только пока L0 в uncertain-band. Доп. зонды: face crop, hand crops (veto), halves, plastic skin, edge coherence.
 
 ## Скриншоты
 
@@ -90,30 +90,33 @@ Gradio (`app.py`): загрузка / сэмпл → Analyze → overlay + summa
 - OpenCLIP ViT-L/14, замороженный; голова — логистическая регрессия.
 - Нормализация общая для train/infer: resize → crop 448 → JPEG q90.
 - High ≈ 0.596 (калибровка ~1% FPR на real cal), low ≈ 0.066.
+- Тайлы: full + left/right (wide) + q00–q11 (если L0∈[low,high]) + face_0; руки только veto/disagree.
 - Это **семантический** зонд, не форензика пикселей.
 
 ## Обучение и гейт
 
-Датасеты снаружи репо (например `/mnt/disk-e/gavel-data`). Не тащить `ai_vs_real_real` в train.
+Датасеты снаружи репо (например `/mnt/disk-e/gavel-data`). Не тащить `ai_vs_real_real` в train. `bushon*` не входит в `real_hands` extract (leave-out).
 
 ```bash
 python training/eval_samples_gate.py
+python training/eval_hardneg_local.py
+python training/eval_faces_local.py
 python training/calibrate_artifacts.py --root /mnt/disk-e/gavel-data
 
-# После своих фото рук в $ROOT/real/hands/
+# После HaGRID/wiki/11k под $ROOT/real/hands/
 python training/extract_features.py --source real_hands --root "$ROOT"
 ./training/retrain_when_hands_ready.sh
 ```
 
-Ship вручную только при GATE PASS и нормальных метриках (не «всё uncertain»).
+Ship вручную только при GATE PASS (+ hardneg) и нормальных метриках (не «всё uncertain»).
 
 ## Ограничения
 
-1. Stock close-up рук — L0 может дать ~0.99; пока спасает `anatomy_hand_veto`.
+1. Stock close-up рук — L0 может дать ~0.99; пока спасает `anatomy_hand_veto` (лечится retrain на hands).
 2. Artifacts на ночи/текстуре могут гореть, но не перебивают L0=`real`.
 3. Geometry при thr 0.02 ложно срабатывает на реальных параллелях.
 4. Physics не подключён.
-5. Часть OOD AI (диптихи) ещё проходит как `real` по L0.
+5. Часть OOD AI всё ещё слабая без новых весов; диптихи / локальный AI закрываются зондами (halves/quads).
 6. Не использовать как единственное «доказательство».
 
 ## Тесты

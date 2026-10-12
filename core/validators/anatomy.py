@@ -321,6 +321,8 @@ def analyze_hand_2d(hand: HandObservation, config: AnatomyConfig | None = None) 
     """2D evidence: distal tip bones of non-adjacent fingers that cross in the image plane.
 
     Calibrated so a real gripping hand (samples/real/real_hand_gym.jpg) yields 0 crossings.
+    H13 tip-order rejected: real grips reverse DIP→TIP while proximal chain stays
+    extended (gym middle/ring), and samples lack broken-AI hands to justify shipping.
     """
     cfg = config or AnatomyConfig()
     px = np.asarray(hand.landmarks_px, dtype=np.float64)

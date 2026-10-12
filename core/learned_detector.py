@@ -117,7 +117,12 @@ class LearnedDetector:
         return probability, logit
 
     @staticmethod
-    def _views(image_bgr: np.ndarray) -> list[tuple[str, np.ndarray, tuple[float, float, float, float]]]:
+    def _views(
+        image_bgr: np.ndarray,
+        *,
+        include_quads: bool = True,
+        include_center: bool = False,
+    ) -> list[tuple[str, np.ndarray, tuple[float, float, float, float]]]:
         h, w = image_bgr.shape[:2]
         views: list[tuple[str, np.ndarray, tuple[float, float, float, float]]] = [
             ("full", image_bgr, (0.0, 0.0, float(w - 1), float(h - 1)))
@@ -129,9 +134,18 @@ class LearnedDetector:
             views.append(
                 ("right", image_bgr[:, mid:], (float(mid), 0.0, float(w - 1), float(h - 1)))
             )
-        # 2x2 quadrants on all large images (incl. wide): local AI regions that
-        # full-frame / half averages miss (samples/ai_05).
-        if min(h, w) >= MIN_QUAD_SIDE:
+        # Center 60% crop (H8): subject often sits mid-frame; full averages edges.
+        if include_center and min(h, w) >= MIN_QUAD_SIDE:
+            m = 0.2  # keep central 60%
+            x1, y1 = int(w * m), int(h * m)
+            x2, y2 = int(w * (1.0 - m)), int(h * (1.0 - m))
+            if x2 - x1 >= MIN_QUAD_SIDE and y2 - y1 >= MIN_QUAD_SIDE:
+                views.append(
+                    ("center", image_bgr[y1:y2, x1:x2], (float(x1), float(y1), float(x2 - 1), float(y2 - 1)))
+                )
+        # 2x2 quadrants: local AI regions that full-frame / half averages miss
+        # (samples/ai_05). H14: score() may skip these when L0 is already decisive.
+        if include_quads and min(h, w) >= MIN_QUAD_SIDE:
             for i in range(2):
                 for j in range(2):
                     y1, y2 = i * h // 2, (i + 1) * h // 2
@@ -168,13 +182,27 @@ class LearnedDetector:
         best_view = "full"
         view_scores: dict[str, float] = {}
         view_boxes: dict[str, tuple[float, float, float, float]] = {}
-        for name, tile_bgr, box in self._views(image_bgr):
+
+        def _score_tile(name: str, tile_bgr: np.ndarray, box: tuple[float, float, float, float]) -> None:
+            nonlocal best_prob, best_logit, best_view
             rgb = cv2.cvtColor(tile_bgr, cv2.COLOR_BGR2RGB)
             prob, logit = self._score_rgb(rgb)
             view_scores[name] = prob
             view_boxes[name] = box
             if prob > best_prob:
                 best_prob, best_logit, best_view = prob, logit, name
+
+        # Pass 1: full (+ left/right if wide). Center crop (H8) rejected: raises
+        # corridor L0 past high without helping AI margin on the gate set.
+        for name, tile_bgr, box in self._views(image_bgr, include_quads=False, include_center=False):
+            _score_tile(name, tile_bgr, box)
+
+        # H14: quadrants only when L0 still in the uncertain band.
+        if self.thresholds.low <= best_prob < self.thresholds.high:
+            for name, tile_bgr, box in self._views(image_bgr, include_quads=True, include_center=False):
+                if name.startswith("q") and name not in view_scores:
+                    _score_tile(name, tile_bgr, box)
+
         # Disagree is only for left|right diptych halves. Quadrants intentionally
         # disagree with full-frame; that is a feature (take max), not uncertainty.
         disagree = False
