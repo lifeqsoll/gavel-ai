@@ -77,6 +77,7 @@ def render_overlay(image: np.ndarray, protocol: EvidenceProtocol) -> np.ndarray:
     if protocol.anatomy_map is not None:
         draw_anatomy_map(canvas, protocol.anatomy_map)
     draw_l0_probes(canvas, protocol)
+    draw_halves_seam(canvas, protocol)
     for evidence in protocol.evidences:
         if evidence.geometry is not None:
             draw_geometry_evidence(canvas, evidence.geometry, evidence.evidence_id)
@@ -111,6 +112,23 @@ def draw_l0_probes(canvas: np.ndarray, protocol: EvidenceProtocol) -> None:
         cv2.rectangle(canvas, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
         label = name if score is None else f"{name} L0={score:.2f}"
         _draw_boxed_label(canvas, label, x1 + 4, min(y2 - 8, h - 8), color)
+
+
+def draw_halves_seam(canvas: np.ndarray, protocol: EvidenceProtocol) -> None:
+    """Vertical midline when left/right appearance disagree (diptych cue)."""
+    metrics = protocol.layers.global_layer.metrics or {}
+    if float(metrics.get("halves_disagree", 0.0)) < 1.0:
+        return
+    mid = int(round(float(metrics.get("half_mid_x", canvas.shape[1] // 2))))
+    h = canvas.shape[0]
+    cv2.line(canvas, (mid, BANNER_HEIGHT), (mid, h - 1), BLACK, 3, cv2.LINE_AA)
+    cv2.line(canvas, (mid, BANNER_HEIGHT), (mid, h - 1), MAGENTA, 1, cv2.LINE_AA)
+    ratio = metrics.get("half_energy_ratio")
+    bhat = metrics.get("half_hist_bhatta")
+    label = "halves DISAGREE"
+    if ratio is not None and bhat is not None:
+        label = f"halves DISAGREE E={ratio:.1f} bhat={bhat:.2f}"
+    _draw_boxed_label(canvas, label, max(mid - 40, 4), BANNER_HEIGHT + 18, MAGENTA)
 
 
 def draw_artifacts_badge(canvas: np.ndarray, score: float) -> None:

@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
+import cv2
 import numpy as np
 
 from agents.anatomy_agent import AnatomyAgent
@@ -30,6 +31,7 @@ from core.registry import (
 )
 from core.validators.anatomy import AnatomyValidator
 from core.validators.artifacts import ArtifactValidator
+from core.validators.halves import analyze_halves
 from core.validators.perspective import PerspectiveValidator
 from core.validators.shadows import ShadowValidator
 from visualizer.overlay import render_overlay
@@ -117,6 +119,7 @@ class GavelPipeline:
                 )
             )
         detector, layers.global_layer = self._run_detector(image, checks, anatomy_map)
+        layers.global_layer = self._attach_halves_probe(image, layers.global_layer)
 
         protocol = EvidenceProtocol(
             image=ImageMetadata(file_name=image_name, width=width, height=height),
@@ -127,6 +130,25 @@ class GavelPipeline:
             layers=layers,
         )
         return PipelineResult(protocol=protocol, annotated_image=render_overlay(image, protocol))
+
+    @staticmethod
+    def _attach_halves_probe(image: np.ndarray, global_layer: LayerScore) -> LayerScore:
+        """Annotate L0 layer with left/right appearance disagreement (diptych cue)."""
+        report = analyze_halves(image)
+        metrics = dict(global_layer.metrics or {})
+        metrics["halves_applicable"] = 1.0 if report.applicable else 0.0
+        metrics["halves_disagree"] = 1.0 if report.disagree else 0.0
+        metrics["half_energy_ratio"] = float(report.energy_ratio)
+        metrics["half_hist_bhatta"] = float(report.hist_bhatta)
+        metrics["half_mid_x"] = float(report.mid_x)
+        reason = global_layer.reason
+        if report.applicable:
+            reason += (
+                f" halves:E_ratio={report.energy_ratio:.2f}"
+                f"/bhat={report.hist_bhatta:.3f}"
+                f"{' DISAGREE' if report.disagree else ''}"
+            )
+        return global_layer.model_copy(update={"metrics": metrics, "reason": reason})
 
     def _run_geometry(
         self,
@@ -317,12 +339,38 @@ class GavelPipeline:
         view_boxes = dict(getattr(output, "view_boxes", None) or {})
         views_disagree = bool(getattr(output, "views_disagree", False))
 
-        # Extra L0 probes on dominant hand crops (not a symbolic layer): helps veto
-        # stock close-up FPs when the full-frame CLIP score is spuriously high.
+        # Extra L0 probes from anatomy landmarks (not symbolic layers).
         hand_probs: list[float] = []
+        face_prob: float | None = None
+        face_lap: float | None = None
         score_bbox = getattr(self.learned_detector, "score_bbox", None)
-        if callable(score_bbox) and anatomy_map is not None and anatomy_map.hands:
-            h, w = image.shape[:2]
+        h, w = image.shape[:2]
+        if callable(score_bbox) and anatomy_map is not None:
+            # Face crop may raise generation score when full-frame dilutes the face.
+            if anatomy_map.face_landmarks_px:
+                xs = [p[0] for p in anatomy_map.face_landmarks_px]
+                ys = [p[1] for p in anatomy_map.face_landmarks_px]
+                pad = 0.08 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+                fbox = (
+                    max(0.0, min(xs) - pad),
+                    max(0.0, min(ys) - pad),
+                    min(float(w - 1), max(xs) + pad),
+                    min(float(h - 1), max(ys) + pad),
+                )
+                try:
+                    face_prob = float(score_bbox(image, fbox))
+                    view_scores["face_0"] = face_prob
+                    view_boxes["face_0"] = fbox
+                    # Plastic / over-smoothed skin cue (AI portraits often lap << 20).
+                    x1, y1, x2, y2 = (int(v) for v in fbox)
+                    crop = image[y1:y2, x1:x2]
+                    if crop.size >= 500:
+                        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                        face_lap = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+                except _STAGE_ERRORS as exc:
+                    logger.warning("face crop L0 skipped: %s", exc)
+
+            # Hand crops: veto probes only (must not raise primary generation score).
             min_side = float(min(h, w)) or 1.0
             for idx, hand in enumerate(anatomy_map.hands):
                 if len(hand.landmarks_px) < 5:
@@ -349,8 +397,7 @@ class GavelPipeline:
                 view_boxes[key] = bbox
                 hand_probs.append(prob)
 
-        # Primary decision stays max over full/left/right only (diptych rule).
-        # Hand crops are probes for fusion veto, not for raising the generation score.
+        # Primary = max over full / left-right / quadrants / face. Hands excluded.
         tile_keys = [k for k in view_scores if not k.startswith("hand_")]
         tile_best = max((view_scores[k] for k in tile_keys), default=float(output.probability))
         primary_prob = float(tile_best)
@@ -385,11 +432,20 @@ class GavelPipeline:
             reason += " tiles_disagree"
         if hand_probs:
             reason += f" hand_crop_min={min(hand_probs):.3f}"
+        if face_lap is not None:
+            reason += f" face_lap={face_lap:.1f}"
+            if face_lap < 20.0:
+                reason += " plastic_skin"
         metrics = {f"view_{k}": float(v) for k, v in view_scores.items()}
         metrics["views_disagree"] = 1.0 if views_disagree else 0.0
         if hand_probs:
             metrics["hand_crop_min"] = float(min(hand_probs))
             metrics["hand_crop_max"] = float(max(hand_probs))
+        if face_prob is not None:
+            metrics["face_crop"] = float(face_prob)
+        if face_lap is not None:
+            metrics["face_laplacian"] = float(face_lap)
+            metrics["plastic_skin"] = 1.0 if face_lap < 20.0 else 0.0
         return detector, LayerScore(
             name="global",
             status="ran",

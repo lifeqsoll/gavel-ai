@@ -357,6 +357,45 @@ def test_hand_crop_probe_vetoes_l0_fp():
     assert "hand_crop" in fusion
 
 
+def test_halves_composite_overturns_l0_real_with_face():
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_GENERATION_SIGNAL, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="ai_01.png", width=880, height=440),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.029,
+            logit=-3.5,
+            decision="real",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global",
+                status="ran",
+                score=0.029,
+                signal=False,
+                metrics={"halves_disagree": 1.0, "half_energy_ratio": 2.8, "half_hist_bhatta": 0.56},
+            ),
+            anatomy=LayerScore(
+                name="anatomy",
+                status="ran",
+                score=0.0,
+                signal=False,
+                metrics={"face_count": 478.0, "hand_count": 0.0},
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "generated"
+    assert label == LABEL_GENERATION_SIGNAL
+    assert fusion == "L0_real+halves_composite"
+
+
 def test_hand_crop_disagree_with_face_forces_uncertain():
     """Selfie+hands: face blocks map veto, but hand crop << full → uncertain."""
     from core.registry import DetectorResult, LayerScore, LayerScores

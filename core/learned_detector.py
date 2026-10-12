@@ -46,6 +46,9 @@ class DetectorThresholds:
 # Wide diptychs (painting|AI side-by-side) center-crop onto the seam and look "real".
 # Score left/right halves too and keep the strongest generation signal.
 WIDE_ASPECT_RATIO = 1.6
+# Non-wide frames: 2x2 quadrants catch local AI regions that full-frame averages out
+# (validated on samples/ai_05: full 0.28 → quadrant 0.79; reals do not rise).
+MIN_QUAD_SIDE = 64
 
 
 @dataclass(frozen=True)
@@ -119,12 +122,22 @@ class LearnedDetector:
         views: list[tuple[str, np.ndarray, tuple[float, float, float, float]]] = [
             ("full", image_bgr, (0.0, 0.0, float(w - 1), float(h - 1)))
         ]
-        if w / max(h, 1) >= WIDE_ASPECT_RATIO and w >= 64:
+        aspect = w / max(h, 1)
+        if aspect >= WIDE_ASPECT_RATIO and w >= MIN_QUAD_SIDE:
             mid = w // 2
             views.append(("left", image_bgr[:, :mid], (0.0, 0.0, float(mid - 1), float(h - 1))))
             views.append(
                 ("right", image_bgr[:, mid:], (float(mid), 0.0, float(w - 1), float(h - 1)))
             )
+        # 2x2 quadrants on all large images (incl. wide): local AI regions that
+        # full-frame / half averages miss (samples/ai_05).
+        if min(h, w) >= MIN_QUAD_SIDE:
+            for i in range(2):
+                for j in range(2):
+                    y1, y2 = i * h // 2, (i + 1) * h // 2
+                    x1, x2 = j * w // 2, (j + 1) * w // 2
+                    box = (float(x1), float(y1), float(x2 - 1), float(y2 - 1))
+                    views.append((f"q{i}{j}", image_bgr[y1:y2, x1:x2], box))
         return views
 
     def score_bbox(
@@ -162,9 +175,11 @@ class LearnedDetector:
             view_boxes[name] = box
             if prob > best_prob:
                 best_prob, best_logit, best_view = prob, logit, name
+        # Disagree is only for left|right diptych halves. Quadrants intentionally
+        # disagree with full-frame; that is a feature (take max), not uncertainty.
         disagree = False
-        if len(view_scores) >= 3:
-            disagree = (max(view_scores.values()) - min(view_scores.values())) >= 0.45
+        if "left" in view_scores and "right" in view_scores:
+            disagree = abs(view_scores["left"] - view_scores["right"]) >= 0.45
         return DetectorOutput(
             probability=best_prob,
             logit=best_logit,

@@ -75,12 +75,48 @@ def test_normalization_produces_fixed_size_jpeg_round_trip():
     assert out.mode == "RGB"
 
 
-def test_wide_image_adds_left_right_views():
+def test_wide_image_adds_left_right_and_quadrants():
     wide = np.zeros((200, 400, 3), dtype=np.uint8)
     names = [name for name, _tile, _box in LearnedDetector._views(wide)]
-    assert names == ["full", "left", "right"]
+    assert names[:3] == ["full", "left", "right"]
+    assert names[3:] == ["q00", "q01", "q10", "q11"]
     tall = np.zeros((400, 200, 3), dtype=np.uint8)
-    assert [name for name, _tile, _box in LearnedDetector._views(tall)] == ["full"]
+    tall_names = [name for name, _tile, _box in LearnedDetector._views(tall)]
+    assert tall_names[0] == "full"
+    assert tall_names[1:] == ["q00", "q01", "q10", "q11"]
+
+
+def test_plastic_skin_with_uncertain_l0():
+    from core.registry import DetectorResult, EvidenceProtocol, ImageMetadata, LayerScore, LayerScores
+    from core.verdict import LABEL_GENERATION_SIGNAL, fuse_layers
+    from tests.test_verdict import PASSED
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="face.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.3,
+            logit=-0.8,
+            decision="uncertain",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global",
+                status="ran",
+                score=0.3,
+                signal=False,
+                metrics={"plastic_skin": 1.0, "face_laplacian": 5.0},
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "generated"
+    assert label == LABEL_GENERATION_SIGNAL
+    assert fusion == "L0_uncertain+plastic_skin"
 
 
 def _fake_detection(decision: str) -> DetectorResult:

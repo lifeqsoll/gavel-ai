@@ -34,6 +34,7 @@ EXPECT_REAL_DECISION = {
 }
 EXPECT_NOT_REAL = {
     # Prefer generated; uncertain allowed; real fails (FN).
+    "ai_01.jpg",  # painting|AI diptych — L0 alone FNs; halves_composite catches it
     "ai_03.jpg",
     "ai_05.jpg",
     "ai_08.jpg",

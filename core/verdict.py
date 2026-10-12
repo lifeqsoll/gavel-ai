@@ -269,12 +269,55 @@ def fuse_layers(
             reasons.append("layers:" + ",".join(layer_hits))
         return LABEL_GENERATION_SIGNAL, "generated", "+".join(reasons)
 
+    # Plastic face skin (very low Laplacian) + L0 uncertain → generation lean.
+    # Extreme threshold (lap<20) calibrated on ai_08 (lap≈5); avoids normal photos.
+    if (
+        detector is not None
+        and detector.decision == "uncertain"
+        and not hard_hits
+        and _plastic_skin_cue(protocol)
+    ):
+        return LABEL_GENERATION_SIGNAL, "generated", "L0_uncertain+plastic_skin"
+
+    # Painting|AI diptychs: halves diverge; L0 may be real OR uncertain after probes.
+    halves = _halves_composite_cue(protocol)
+    if halves and not hard_hits and detector.decision in {"real", "uncertain"}:
+        face_n = _face_count_for_fusion(protocol)
+        if face_n > 0:
+            return LABEL_GENERATION_SIGNAL, "generated", f"L0_{detector.decision}+halves_composite"
+        if l0_real:
+            return LABEL_INCONCLUSIVE, "uncertain", "L0_real_halves_disagree"
+
     if l0_real and not layer_hits:
         if soft_hits:
             return LABEL_NO_SIGNAL, "real", "L0_real_soft_ignored:" + ",".join(soft_hits)
         return LABEL_NO_SIGNAL, "real", "L0_real"
 
     return LABEL_INCONCLUSIVE, "uncertain", "L0_" + detector.decision
+
+
+def _face_count_for_fusion(protocol: EvidenceProtocol) -> int:
+    anatomy = protocol.layers.anatomy
+    face_n = _metric_float(anatomy.metrics or {}, "face_count")
+    if face_n is not None:
+        return int(face_n)
+    parsed = _parse_face_count(anatomy.reason)
+    if parsed >= 0:
+        return parsed
+    amap = protocol.anatomy_map
+    return len(amap.face_landmarks_px) if amap else 0
+
+
+def _halves_composite_cue(protocol: EvidenceProtocol) -> bool:
+    metrics = protocol.layers.global_layer.metrics or {}
+    flag = _metric_float(metrics, "halves_disagree")
+    return bool(flag and flag >= 1.0)
+
+
+def _plastic_skin_cue(protocol: EvidenceProtocol) -> bool:
+    metrics = protocol.layers.global_layer.metrics or {}
+    flag = _metric_float(metrics, "plastic_skin")
+    return bool(flag and flag >= 1.0)
 
 
 def compute_verdict(protocol: EvidenceProtocol, config: VerdictConfig | None = None) -> Verdict:
