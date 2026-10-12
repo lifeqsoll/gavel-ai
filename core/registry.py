@@ -19,7 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-PROTOCOL_VERSION = "1.3.0"
+PROTOCOL_VERSION = "1.4.0"
 
 Point2D = tuple[float, float]
 BBox2D = tuple[float, float, float, float]  # (x1, y1, x2, y2) in pixels
@@ -38,6 +38,7 @@ class AnomalyType(str, Enum):
     GEOMETRY_PERSPECTIVE_VIOLATION = "GEOMETRY_PERSPECTIVE_VIOLATION"
     ANATOMY_HAND_DEFORMATION = "ANATOMY_HAND_DEFORMATION"
     LIGHT_CONSISTENCY_VIOLATION = "LIGHT_CONSISTENCY_VIOLATION"
+    ARTIFACTS_RESIDUAL = "ARTIFACTS_RESIDUAL"
 
 
 class LineSegment(_Schema):
@@ -92,10 +93,19 @@ class LightingPayload(_Schema):
     image_diagonal: float = Field(gt=0)
 
 
+class ArtifactsPayload(_Schema):
+    """Soft cue metrics from flat-region residual kurtosis (no spatial marks)."""
+
+    flat_kurtosis: float
+    residual_energy: float
+    score: float = Field(ge=0.0, le=1.0)
+
+
 _PAYLOAD_FIELD: dict[AnomalyType, str] = {
     AnomalyType.GEOMETRY_PERSPECTIVE_VIOLATION: "geometry",
     AnomalyType.ANATOMY_HAND_DEFORMATION: "anatomy",
     AnomalyType.LIGHT_CONSISTENCY_VIOLATION: "lighting",
+    AnomalyType.ARTIFACTS_RESIDUAL: "artifacts",
 }
 
 
@@ -110,6 +120,7 @@ class Evidence(_Schema):
     geometry: GeometryPayload | None = None
     anatomy: AnatomyPayload | None = None
     lighting: LightingPayload | None = None
+    artifacts: ArtifactsPayload | None = None
 
     @field_validator("metrics")
     @classmethod
@@ -122,7 +133,7 @@ class Evidence(_Schema):
     @model_validator(mode="after")
     def _payload_matches_anomaly(self) -> Evidence:
         expected = _PAYLOAD_FIELD[self.anomaly_type]
-        for name in ("geometry", "anatomy", "lighting"):
+        for name in ("geometry", "anatomy", "lighting", "artifacts"):
             present = getattr(self, name) is not None
             if present != (name == expected):
                 raise ValueError(f"{self.anomaly_type.value} requires only the '{expected}' payload")
@@ -156,6 +167,9 @@ class DetectorResult(_Schema):
     decision: Decision
     high_threshold: float = Field(ge=0.0, le=1.0)
     low_threshold: float = Field(ge=0.0, le=1.0)
+    view: str = "full"
+    view_scores: dict[str, float] = Field(default_factory=dict)
+    views_disagree: bool = False
 
 
 class HandMap(_Schema):
@@ -179,6 +193,16 @@ class LayerScore(_Schema):
     score: float | None = Field(default=None, ge=0.0, le=1.0)
     signal: bool = False
     reason: str = ""
+    # Machine-readable layer context for fusion (hand_span, face_count, n_critical, …).
+    metrics: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("metrics")
+    @classmethod
+    def _layer_metrics_are_finite(cls, value: dict[str, float]) -> dict[str, float]:
+        bad = [key for key, val in value.items() if not math.isfinite(val)]
+        if bad:
+            raise ValueError(f"Non-finite layer metrics: {bad}")
+        return value
 
 
 class LayerScores(_Schema):

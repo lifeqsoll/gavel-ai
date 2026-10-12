@@ -1,7 +1,10 @@
 """Per-layer vote thresholds for fusion A.
 
 L0 high/low live in models/thresholds.json (calibrated probabilities).
-Other layers use score-space thresholds here; geometry does not vote yet.
+Other layers use score-space thresholds here:
+    anatomy/physics — one WARNING evidence ≈ threshold (default 0.5)
+    artifacts — soft kurtosis score (default ~0.95 after calibration)
+    geometry — CRITICAL evidence sets signal; score uses geometry threshold
 """
 
 from __future__ import annotations

@@ -4,9 +4,10 @@ Legend used on every overlay:
     cyan                  anatomy map: face contours (not a verdict)
     green                 anatomy map: pose skeleton (not a verdict)
     amber thin            anatomy map: hand skeleton (not a verdict)
+    magenta               anatomy anomaly (rule violation → layer evidence)
     red with white halo   geometry findings
     yellow                lighting findings
-    top bar               detector score first (global), then symbolic finding counts
+    top bar               Final decision + L0, then symbolic finding counts
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from core.registry import (
 RED = (0, 0, 255)
 YELLOW = (0, 255, 255)
 AMBER = (0, 165, 255)
+# Magenta: anatomy *anomaly* marks (distinct from amber hand map).
+MAGENTA = (255, 0, 255)
 CYAN = (255, 255, 0)
 GREEN = (0, 220, 0)
 WHITE = (255, 255, 255)
@@ -145,7 +148,7 @@ def draw_geometry_evidence(canvas: np.ndarray, payload: GeometryPayload, evidenc
 
 
 def draw_anatomy_evidence(canvas: np.ndarray, payload: AnatomyPayload) -> None:
-    """One amber box around the hand with a readable label. Hint only, never a verdict."""
+    """Magenta box for hand rule violations (distinct from amber map skeleton)."""
     if payload.landmarks_px:
         xs = [p[0] for p in payload.landmarks_px]
         ys = [p[1] for p in payload.landmarks_px]
@@ -161,10 +164,13 @@ def draw_anatomy_evidence(canvas: np.ndarray, payload: AnatomyPayload) -> None:
     x2 = int(round(min(max(xs) + pad, canvas.shape[1] - 1)))
     y2 = int(round(min(max(ys) + pad, canvas.shape[0] - 1)))
     cv2.rectangle(canvas, (x1, y1), (x2, y2), BLACK, 3, cv2.LINE_AA)
-    cv2.rectangle(canvas, (x1, y1), (x2, y2), AMBER, 2, cv2.LINE_AA)
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), MAGENTA, 2, cv2.LINE_AA)
+    for joint in payload.flagged_joints:
+        jx1, jy1, jx2, jy2 = (int(round(v)) for v in joint.bbox)
+        cv2.rectangle(canvas, (jx1, jy1), (jx2, jy2), MAGENTA, 1, cv2.LINE_AA)
     n = len(payload.flagged_joints)
-    label = f"hand hint ({payload.handedness}): {n} joint(s), not a verdict"
-    _draw_boxed_label(canvas, label, x1, max(y1 - 8, 40), AMBER)
+    label = f"ANATOMY anomaly ({payload.handedness}): {n} flag(s)"
+    _draw_boxed_label(canvas, label, x1, max(y1 - 8, 40), MAGENTA)
 
 
 def draw_lighting_evidence(canvas: np.ndarray, payload: LightingPayload) -> None:
@@ -266,6 +272,6 @@ def _draw_banner(canvas: np.ndarray, protocol: EvidenceProtocol) -> None:
     second = (
         f"{protocol.image.file_name}  |  symbolic findings: {len(protocol.evidences)}  "
         f"(CRITICAL {critical}, WARNING {warning})  |  {map_note}  |  "
-        f"cyan=face  green=pose  amber=hands  red=geometry  yellow=lighting"
+        f"cyan=face  green=pose  amber=hands  magenta=anatomy  red=geometry  yellow=lighting"
     )
     cv2.putText(canvas, second, (8, 38), FONT, 0.45, WHITE, 1, cv2.LINE_AA)

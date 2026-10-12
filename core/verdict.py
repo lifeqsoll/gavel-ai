@@ -103,26 +103,46 @@ def _parse_hand_count(reason: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _metric_float(metrics: dict[str, float], key: str) -> float | None:
+    if key not in metrics:
+        return None
+    return float(metrics[key])
+
+
 def anatomy_hand_vetoes_l0(protocol: EvidenceProtocol, config: VerdictConfig) -> bool:
     """True when a clean, face-free hand close-up should override L0 alone.
 
     AI portraits almost always have a face mesh, so they keep the L0 vote.
+    Prefers LayerScore.metrics; falls back to reason-string parsing for older protocols.
     """
     anatomy = protocol.layers.anatomy
     if anatomy.status != "ran" or anatomy.score is None:
         return False
     if anatomy.score > config.anatomy_veto_max_score or anatomy.signal:
         return False
-    if _parse_hand_count(anatomy.reason) < 1:
+
+    metrics = anatomy.metrics or {}
+    hand_n = _metric_float(metrics, "hand_count")
+    if hand_n is None:
+        hand_n = float(_parse_hand_count(anatomy.reason))
+    if hand_n < 1:
         return False
-    face_n = _parse_face_count(anatomy.reason)
-    if face_n < 0:
-        # Fallback to protocol map when reason is older/incomplete.
-        amap = protocol.anatomy_map
-        face_n = len(amap.face_landmarks_px) if amap else 0
+
+    face_n = _metric_float(metrics, "face_count")
+    if face_n is None:
+        parsed = _parse_face_count(anatomy.reason)
+        if parsed < 0:
+            amap = protocol.anatomy_map
+            face_n = float(len(amap.face_landmarks_px) if amap else 0)
+        else:
+            face_n = float(parsed)
     if face_n > 0:
         return False
-    if _parse_hand_span(anatomy.reason) < config.anatomy_veto_min_hand_span:
+
+    hand_span = _metric_float(metrics, "hand_span")
+    if hand_span is None:
+        hand_span = _parse_hand_span(anatomy.reason)
+    if hand_span < config.anatomy_veto_min_hand_span:
         return False
     return True
 
@@ -143,11 +163,15 @@ def fuse_layers(
         for layer in _layer_list(protocol)
         if _layer_votes(layer) and layer.name != "global"
     ]
+    hard_hits = [name for name in layer_hits if name not in _SOFT_LAYER_VOTES]
+    soft_hits = [name for name in layer_hits if name in _SOFT_LAYER_VOTES]
     l0_generated = detector is not None and detector.decision == "generated"
     l0_real = detector is not None and detector.decision == "real"
     if l0_real:
-        layer_hits = [name for name in layer_hits if name not in _SOFT_LAYER_VOTES]
+        # Soft cues cannot overturn calibrated L0_real.
+        layer_hits = list(hard_hits)
     veto = l0_generated and anatomy_hand_vetoes_l0(protocol, config) and not layer_hits
+    tiles_disagree = bool(detector is not None and detector.views_disagree)
 
     if detector is None:
         if layer_hits:
@@ -156,6 +180,11 @@ def fuse_layers(
 
     if veto:
         return LABEL_NO_SIGNAL, "real", "anatomy_hand_veto"
+
+    # Wide diptychs: left/right tiles disagree strongly — do not trust max-tile alone
+    # unless a hard symbolic layer already voted.
+    if tiles_disagree and not hard_hits and not veto:
+        return LABEL_INCONCLUSIVE, "uncertain", "L0_tiles_disagree"
 
     if l0_generated or layer_hits:
         reasons = []
@@ -166,13 +195,8 @@ def fuse_layers(
         return LABEL_GENERATION_SIGNAL, "generated", "+".join(reasons)
 
     if l0_real and not layer_hits:
-        soft = [
-            layer.name
-            for layer in _layer_list(protocol)
-            if _layer_votes(layer) and layer.name in _SOFT_LAYER_VOTES
-        ]
-        if soft:
-            return LABEL_NO_SIGNAL, "real", "L0_real_soft_ignored:" + ",".join(soft)
+        if soft_hits:
+            return LABEL_NO_SIGNAL, "real", "L0_real_soft_ignored:" + ",".join(soft_hits)
         return LABEL_NO_SIGNAL, "real", "L0_real"
 
     return LABEL_INCONCLUSIVE, "uncertain", "L0_" + detector.decision

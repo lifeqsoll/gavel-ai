@@ -150,6 +150,40 @@ def test_anatomy_hand_veto_suppresses_l0_only_fp():
     assert fusion == "anatomy_hand_veto"
 
 
+def test_anatomy_hand_veto_reads_metrics_without_reason():
+    """Fusion veto must work from LayerScore.metrics alone (no reason regex)."""
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_NO_SIGNAL, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="hand.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.99,
+            logit=5.0,
+            decision="generated",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(name="global", status="ran", score=0.99, signal=True),
+            anatomy=LayerScore(
+                name="anatomy",
+                status="ran",
+                score=0.0,
+                signal=False,
+                reason="",
+                metrics={"hand_count": 1.0, "face_count": 0.0, "hand_span": 0.25},
+            ),
+        ),
+    )
+    _, decision, fusion = fuse_layers(protocol)
+    assert decision == "real"
+    assert fusion == "anatomy_hand_veto"
+
+
 def test_artifacts_cannot_overturn_l0_real():
     from core.registry import DetectorResult, LayerScore, LayerScores
     from core.verdict import LABEL_NO_SIGNAL, fuse_layers
@@ -204,6 +238,7 @@ def test_anatomy_hand_veto_does_not_kill_ai_face():
                 score=0.0,
                 signal=False,
                 reason="hand_warnings=0 hands=0 face=478 hand_span=0.000",
+                metrics={"hand_count": 0.0, "face_count": 478.0, "hand_span": 0.0},
             ),
         ),
     )
@@ -211,3 +246,117 @@ def test_anatomy_hand_veto_does_not_kill_ai_face():
     assert decision == "generated"
     assert "L0" in fusion
     assert fusion != "anatomy_hand_veto"
+
+
+def test_tiles_disagree_forces_uncertain_without_hard_votes():
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_INCONCLUSIVE, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="diptych.png", width=200, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.92,
+            logit=2.4,
+            decision="generated",
+            high_threshold=0.596,
+            low_threshold=0.066,
+            views_disagree=True,
+            view_scores={"full": 0.1, "left": 0.92, "right": 0.05},
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global",
+                status="ran",
+                score=0.92,
+                signal=True,
+                reason="decision=generated tiles_disagree",
+                metrics={"views_disagree": 1.0},
+            ),
+            artifacts=LayerScore(
+                name="artifacts", status="ran", score=1.0, signal=True, reason="soft"
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "uncertain"
+    assert label == LABEL_INCONCLUSIVE
+    assert fusion == "L0_tiles_disagree"
+
+
+def test_tiles_disagree_yields_to_hard_geometry():
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_GENERATION_SIGNAL, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="diptych.png", width=200, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.1,
+            logit=-2.0,
+            decision="real",
+            high_threshold=0.596,
+            low_threshold=0.066,
+            views_disagree=True,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(name="global", status="ran", score=0.1, signal=False),
+            geometry=LayerScore(
+                name="geometry", status="ran", score=0.55, signal=True, reason="critical=1"
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "generated"
+    assert label == LABEL_GENERATION_SIGNAL
+    assert "geometry" in fusion
+
+
+def test_soft_artifacts_evidence_does_not_overturn_l0_real():
+    """Artifacts may appear as Evidence WARNING but remain soft vs L0_real."""
+    from core.registry import (
+        ArtifactsPayload,
+        DetectorResult,
+        LayerScore,
+        LayerScores,
+    )
+    from core.verdict import LABEL_NO_SIGNAL, compute_verdict
+
+    evidences = [
+        Evidence(
+            evidence_id="ART-01",
+            anomaly_type=AnomalyType.ARTIFACTS_RESIDUAL,
+            severity=Severity.WARNING,
+            description="soft cue",
+            metrics={"score": 1.0, "flat_kurtosis": 90.0, "residual_energy": 10.0},
+            artifacts=ArtifactsPayload(flat_kurtosis=90.0, residual_energy=10.0, score=1.0),
+        )
+    ]
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="train.png", width=100, height=100),
+        checks=PASSED,
+        evidences=evidences,
+        detector=DetectorResult(
+            model="test",
+            probability=0.006,
+            logit=-5.0,
+            decision="real",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(name="global", status="ran", score=0.006, signal=False),
+            artifacts=LayerScore(
+                name="artifacts", status="ran", score=1.0, signal=True, reason="flat_kurtosis=90"
+            ),
+        ),
+    )
+    verdict = compute_verdict(protocol)
+    assert verdict.decision == "real"
+    assert verdict.label == LABEL_NO_SIGNAL
+    assert "L0_real" in (verdict.fusion or "")
+    assert "artifacts" in (verdict.fusion or "")

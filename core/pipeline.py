@@ -13,8 +13,11 @@ from agents.geometry_agent import GeometryAgent
 from agents.light_agent import LightAgent
 from core.learned_detector import DetectorOutput
 from core.observations import BodyScene, LightObservation, Segment
+from core.layer_thresholds import load_layer_thresholds
 from core.registry import (
     AnatomyMap,
+    AnomalyType,
+    ArtifactsPayload,
     CheckRecord,
     DetectorResult,
     Evidence,
@@ -81,7 +84,8 @@ class GavelPipeline:
         layers.geometry = self._run_geometry(image, size, checks, evidences)
         anatomy_map, layers.anatomy = self._run_anatomy(image, checks, evidences)
         layers.physics = self._run_lighting(image, size, checks, evidences)
-        layers.artifacts = self.artifact_validator.analyze(image).layer
+        artifact_report = self.artifact_validator.analyze(image)
+        layers.artifacts = artifact_report.layer
         checks.append(
             CheckRecord(
                 check="artifacts.residual",
@@ -89,6 +93,29 @@ class GavelPipeline:
                 reason=layers.artifacts.reason,
             )
         )
+        if layers.artifacts.signal:
+            evidences.append(
+                Evidence(
+                    evidence_id="ART-01",
+                    anomaly_type=AnomalyType.ARTIFACTS_RESIDUAL,
+                    severity=Severity.WARNING,
+                    description=(
+                        "Soft artifact cue: flat-region residual kurtosis is high "
+                        f"(score={layers.artifacts.score:.3f}). Soft vote only — "
+                        "cannot overturn L0=real."
+                    ),
+                    metrics={
+                        "score": float(layers.artifacts.score or 0.0),
+                        "flat_kurtosis": float(artifact_report.flat_kurtosis),
+                        "residual_energy": float(artifact_report.residual_energy),
+                    },
+                    artifacts=ArtifactsPayload(
+                        flat_kurtosis=float(artifact_report.flat_kurtosis),
+                        residual_energy=float(artifact_report.residual_energy),
+                        score=float(layers.artifacts.score or 0.0),
+                    ),
+                )
+            )
         detector, layers.global_layer = self._run_detector(image, checks)
 
         protocol = EvidenceProtocol(
@@ -131,14 +158,22 @@ class GavelPipeline:
         n_warn = sum(1 for e in report.evidences if e.severity is Severity.WARNING)
         # Score only from evidences. Raw MAD without a WARNING/CRITICAL is noise
         # (near-parallel real edges), not a generation signal.
-        score = float(min(1.0, 0.55 * n_crit + 0.25 * n_warn))
-        signal = n_crit > 0
+        thr = load_layer_thresholds().geometry
+        score = float(min(1.0, thr * n_crit + 0.25 * n_warn))
+        # Vote on CRITICAL perspective evidence (hard layer).
+        signal = n_crit > 0 and score >= thr
         return LayerScore(
             name="geometry",
             status="ran",
             score=score,
             signal=signal,
             reason=f"evidences={len(report.evidences)} critical={n_crit} warning={n_warn}",
+            metrics={
+                "n_critical": float(n_crit),
+                "n_warning": float(n_warn),
+                "n_evidences": float(len(report.evidences)),
+                "n_segments": float(report.n_valid_segments),
+            },
         )
 
     def _run_anatomy(
@@ -170,20 +205,21 @@ class GavelPipeline:
 
         report = self.anatomy_validator.validate(scene.hands)
         evidences.extend(report.evidences)
+        face_count = len(anatomy_map.face_landmarks_px)
+        pose_count = sum(1 for p in anatomy_map.pose_landmarks_px if p is not None)
+        hand_count = len(anatomy_map.hands)
         checks.append(
             CheckRecord(
                 check=name,
                 status="violation" if report.evidences else "passed",
                 reason=(
-                    f"face={len(anatomy_map.face_landmarks_px)} "
-                    f"pose={sum(1 for p in anatomy_map.pose_landmarks_px if p is not None)} "
-                    f"hands={len(anatomy_map.hands)} "
+                    f"face={face_count} pose={pose_count} hands={hand_count} "
                     f"hand_evidence={'on' if self.anatomy_validator.config.emit_hand_evidence else 'off'}"
                 ),
             )
         )
-        score = float(min(1.0, 0.5 * len(report.evidences)))
-        # Vote threshold 0.5 == one calibrated hand WARNING (models/layer_thresholds.json).
+        thr = load_layer_thresholds().anatomy
+        score = float(min(1.0, thr * len(report.evidences)))
         hand_span = 0.0
         if anatomy_map.hands:
             h, w = image.shape[:2]
@@ -199,13 +235,20 @@ class GavelPipeline:
             name="anatomy",
             status="ran",
             score=score,
-            signal=score >= 0.5,
+            signal=score >= thr,
             reason=(
                 f"hand_warnings={len(report.evidences)} "
-                f"hands={len(anatomy_map.hands)} "
-                f"face={len(anatomy_map.face_landmarks_px)} "
+                f"hands={hand_count} "
+                f"face={face_count} "
                 f"hand_span={hand_span:.3f}"
             ),
+            metrics={
+                "hand_warnings": float(len(report.evidences)),
+                "hand_count": float(hand_count),
+                "face_count": float(face_count),
+                "pose_count": float(pose_count),
+                "hand_span": float(hand_span),
+            },
         )
 
     def _run_lighting(
@@ -216,8 +259,14 @@ class GavelPipeline:
         evidences: list[Evidence],
     ) -> LayerScore:
         name = "lighting.consistency"
+        provider_missing = "no scene provider configured"
         try:
             observations = self.light_agent.extract(image)
+        except NotImplementedError as exc:
+            reason = provider_missing if "scene provider" in str(exc).lower() else str(exc)
+            logger.warning("%s skipped: %s", name, reason)
+            checks.append(CheckRecord(check=name, status="skipped", reason=reason))
+            return LayerScore(name="physics", status="skipped", reason=reason)
         except _STAGE_ERRORS as exc:
             logger.warning("%s skipped: %s", name, exc)
             checks.append(CheckRecord(check=name, status="skipped", reason=str(exc)))
@@ -237,13 +286,15 @@ class GavelPipeline:
                 reason=f"rays={report.n_rays}",
             )
         )
-        score = float(min(1.0, 0.5 * len(report.evidences)))
+        thr = load_layer_thresholds().physics
+        score = float(min(1.0, thr * len(report.evidences)))
         return LayerScore(
             name="physics",
             status="ran",
             score=score,
-            signal=score >= 0.5,
+            signal=score >= thr,
             reason=f"evidences={len(report.evidences)}",
+            metrics={"n_evidences": float(len(report.evidences)), "n_rays": float(report.n_rays)},
         )
 
     def _run_detector(
@@ -258,6 +309,9 @@ class GavelPipeline:
             logger.warning("%s skipped: %s", name, exc)
             checks.append(CheckRecord(check=name, status="skipped", reason=str(exc)))
             return None, LayerScore(name="global", status="skipped", reason=str(exc))
+        view = getattr(output, "view", "full")
+        view_scores = dict(getattr(output, "view_scores", None) or {})
+        views_disagree = bool(getattr(output, "views_disagree", False))
         detector = DetectorResult(
             model=output.model,
             probability=output.probability,
@@ -265,21 +319,25 @@ class GavelPipeline:
             decision=output.decision,
             high_threshold=output.thresholds.high,
             low_threshold=output.thresholds.low,
+            view=view,
+            view_scores=view_scores,
+            views_disagree=views_disagree,
         )
-        view = getattr(output, "view", "full")
         reason = f"decision={output.decision}"
         if view != "full":
             reason += f" view={view}"
-        view_scores = getattr(output, "view_scores", None) or {}
         if len(view_scores) > 1:
             parts = ",".join(f"{k}={v:.3f}" for k, v in sorted(view_scores.items()))
             reason += f" tiles=[{parts}]"
-        if getattr(output, "views_disagree", False):
+        if views_disagree:
             reason += " tiles_disagree"
+        metrics = {f"view_{k}": float(v) for k, v in view_scores.items()}
+        metrics["views_disagree"] = 1.0 if views_disagree else 0.0
         return detector, LayerScore(
             name="global",
             status="ran",
             score=float(output.probability),
             signal=output.decision == "generated",
             reason=reason,
+            metrics=metrics,
         )

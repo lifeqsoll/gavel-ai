@@ -79,7 +79,7 @@ def _layers_markdown(protocol) -> list[str]:
         if layer.status == "skipped":
             note = layer.reason
             if layer.name == "physics":
-                note = "not configured yet — does not vote"
+                note = "disabled until scene provider — does not vote"
             lines.append(f"- {title}: skipped ({note})")
         else:
             score_val = layer.score
@@ -89,8 +89,15 @@ def _layers_markdown(protocol) -> list[str]:
                 and protocol.detector is not None
                 and protocol.detector.decision == "real"
             )
+            tiles_blocked = (
+                layer.name == "global"
+                and protocol.detector is not None
+                and protocol.detector.views_disagree
+            )
             if soft_blocked:
                 vote = "cue only (ignored: L0=real)"
+            elif tiles_blocked and layer.signal:
+                vote = "tiles disagree (fusion may force uncertain)"
             elif layer.signal:
                 vote = "VOTES"
             else:
@@ -135,9 +142,11 @@ def _detector_summary(verdict: Verdict, protocol=None) -> str:
         f"Coverage: {verdict.coverage_note}",
         "",
         "**Fusion A.** Signal if L0=`generated` OR a hard layer vote (geometry CRITICAL, "
-        "anatomy/physics evidence). Artifacts are a soft cue: they vote with L0 uncertain/generated, "
-        "but cannot overturn L0=`real`. A clean face-free hand close-up (anatomy≤0.1) can veto an "
-        "L0-only false positive. Cyan/green/amber = anatomy map. Only L0 is calibrated.",
+        "anatomy evidence). Artifacts are a soft cue: they vote with L0 uncertain/generated, "
+        "but cannot overturn L0=`real`. Wide tiles that disagree force `uncertain` unless a hard "
+        "layer already voted. A clean face-free hand close-up can veto an L0-only FP. "
+        "Physics is disabled until a scene provider is wired. "
+        "Cyan/green/amber = anatomy map; magenta = anatomy anomaly. Only L0 is calibrated.",
         "",
     ]
     if protocol is not None:

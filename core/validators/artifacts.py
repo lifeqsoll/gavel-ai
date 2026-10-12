@@ -78,6 +78,11 @@ class ArtifactValidator:
             score=score,
             signal=signal,
             reason=f"flat_kurtosis={kurtosis:.1f} residual_energy={energy:.2f}",
+            metrics={
+                "flat_kurtosis": float(kurtosis),
+                "residual_energy": float(energy),
+                "signal_threshold": float(cfg.signal_threshold),
+            },
         )
         return ArtifactReport(
             layer=layer,
