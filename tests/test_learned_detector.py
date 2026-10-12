@@ -77,10 +77,10 @@ def test_normalization_produces_fixed_size_jpeg_round_trip():
 
 def test_wide_image_adds_left_right_views():
     wide = np.zeros((200, 400, 3), dtype=np.uint8)
-    names = [name for name, _ in LearnedDetector._views(wide)]
+    names = [name for name, _tile, _box in LearnedDetector._views(wide)]
     assert names == ["full", "left", "right"]
     tall = np.zeros((400, 200, 3), dtype=np.uint8)
-    assert [name for name, _ in LearnedDetector._views(tall)] == ["full"]
+    assert [name for name, _tile, _box in LearnedDetector._views(tall)] == ["full"]
 
 
 def _fake_detection(decision: str) -> DetectorResult:

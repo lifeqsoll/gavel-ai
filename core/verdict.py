@@ -109,24 +109,22 @@ def _metric_float(metrics: dict[str, float], key: str) -> float | None:
     return float(metrics[key])
 
 
-def anatomy_hand_vetoes_l0(protocol: EvidenceProtocol, config: VerdictConfig) -> bool:
-    """True when a clean, face-free hand close-up should override L0 alone.
-
-    AI portraits almost always have a face mesh, so they keep the L0 vote.
-    Prefers LayerScore.metrics; falls back to reason-string parsing for older protocols.
-    """
+def _anatomy_hand_context(
+    protocol: EvidenceProtocol, config: VerdictConfig
+) -> tuple[bool, float, float]:
+    """Return (eligible_face_free_hand, hand_span, face_count) for veto helpers."""
     anatomy = protocol.layers.anatomy
     if anatomy.status != "ran" or anatomy.score is None:
-        return False
+        return False, 0.0, 0.0
     if anatomy.score > config.anatomy_veto_max_score or anatomy.signal:
-        return False
+        return False, 0.0, 0.0
 
     metrics = anatomy.metrics or {}
     hand_n = _metric_float(metrics, "hand_count")
     if hand_n is None:
         hand_n = float(_parse_hand_count(anatomy.reason))
     if hand_n < 1:
-        return False
+        return False, 0.0, 0.0
 
     face_n = _metric_float(metrics, "face_count")
     if face_n is None:
@@ -137,14 +135,81 @@ def anatomy_hand_vetoes_l0(protocol: EvidenceProtocol, config: VerdictConfig) ->
         else:
             face_n = float(parsed)
     if face_n > 0:
-        return False
+        return False, 0.0, face_n
 
     hand_span = _metric_float(metrics, "hand_span")
     if hand_span is None:
         hand_span = _parse_hand_span(anatomy.reason)
     if hand_span < config.anatomy_veto_min_hand_span:
+        return False, hand_span, face_n
+    return True, hand_span, face_n
+
+
+def anatomy_hand_vetoes_l0(protocol: EvidenceProtocol, config: VerdictConfig) -> bool:
+    """True when a clean, face-free hand close-up should override L0 alone.
+
+    AI portraits almost always have a face mesh, so they keep the L0 vote.
+    Prefers LayerScore.metrics; falls back to reason-string parsing for older protocols.
+    """
+    eligible, _, _ = _anatomy_hand_context(protocol, config)
+    return eligible
+
+
+def _hand_crop_min(protocol: EvidenceProtocol) -> float | None:
+    detector = protocol.detector
+    if detector is None:
+        return None
+    hand_scores = [v for k, v in detector.view_scores.items() if k.startswith("hand_")]
+    if hand_scores:
+        return float(min(hand_scores))
+    return _metric_float(protocol.layers.global_layer.metrics or {}, "hand_crop_min")
+
+
+def hand_crop_vetoes_l0(protocol: EvidenceProtocol, config: VerdictConfig) -> bool:
+    """True when an L0 hand-crop probe looks real while full-frame L0 says generated.
+
+    Extra detector feature (not a symbolic layer): MediaPipe hand bbox re-scored by CLIP.
+    Face-free hand close-ups only (AI portraits keep the L0 vote).
+    """
+    detector = protocol.detector
+    if detector is None or detector.decision != "generated":
         return False
-    return True
+    eligible, _, _ = _anatomy_hand_context(protocol, config)
+    if not eligible:
+        return False
+    hand_min = _hand_crop_min(protocol)
+    if hand_min is None:
+        return False
+    return hand_min < detector.low_threshold
+
+
+def hand_crop_disagrees_l0(protocol: EvidenceProtocol, config: VerdictConfig) -> bool:
+    """Full-frame L0 generated but hand crop firmly real (often selfie+hands with a face).
+
+    Does not claim real — fusion should force uncertain when no hard layer votes.
+    Gap mirrors tiles_disagree (0.45) so AI faces with weird hands rarely trigger.
+    """
+    detector = protocol.detector
+    if detector is None or detector.decision != "generated":
+        return False
+    anatomy = protocol.layers.anatomy
+    if anatomy.status != "ran" or anatomy.signal:
+        return False
+    metrics = anatomy.metrics or {}
+    hand_n = _metric_float(metrics, "hand_count")
+    if hand_n is None:
+        hand_n = float(_parse_hand_count(anatomy.reason))
+    if hand_n < 1:
+        return False
+    hand_span = _metric_float(metrics, "hand_span")
+    if hand_span is None:
+        hand_span = _parse_hand_span(anatomy.reason)
+    if hand_span < config.anatomy_veto_min_hand_span:
+        return False
+    hand_min = _hand_crop_min(protocol)
+    if hand_min is None or hand_min >= detector.low_threshold:
+        return False
+    return (detector.probability - hand_min) >= 0.45
 
 
 # Soft cues: useful with L0 uncertain/generated, but alone they FP on real night/texture
@@ -170,7 +235,12 @@ def fuse_layers(
     if l0_real:
         # Soft cues cannot overturn calibrated L0_real.
         layer_hits = list(hard_hits)
-    veto = l0_generated and anatomy_hand_vetoes_l0(protocol, config) and not layer_hits
+    map_veto = l0_generated and anatomy_hand_vetoes_l0(protocol, config) and not layer_hits
+    crop_veto = l0_generated and hand_crop_vetoes_l0(protocol, config) and not layer_hits
+    crop_disagree = (
+        l0_generated and hand_crop_disagrees_l0(protocol, config) and not hard_hits
+    )
+    veto = map_veto or crop_veto
     tiles_disagree = bool(detector is not None and detector.views_disagree)
 
     if detector is None:
@@ -178,13 +248,18 @@ def fuse_layers(
             return LABEL_GENERATION_SIGNAL, "generated", "layers:" + ",".join(layer_hits)
         return LABEL_INCONCLUSIVE, "uncertain", "no_detector"
 
-    if veto:
+    if crop_veto and map_veto:
+        return LABEL_NO_SIGNAL, "real", "anatomy_hand_veto+L0_hand_crop"
+    if crop_veto:
+        return LABEL_NO_SIGNAL, "real", "L0_hand_crop_real"
+    if map_veto:
         return LABEL_NO_SIGNAL, "real", "anatomy_hand_veto"
 
-    # Wide diptychs: left/right tiles disagree strongly — do not trust max-tile alone
-    # unless a hard symbolic layer already voted.
+    # Wide diptychs OR full-vs-hand-crop clash: do not trust max L0 alone.
     if tiles_disagree and not hard_hits and not veto:
         return LABEL_INCONCLUSIVE, "uncertain", "L0_tiles_disagree"
+    if crop_disagree and not veto:
+        return LABEL_INCONCLUSIVE, "uncertain", "L0_hand_crop_disagree"
 
     if l0_generated or layer_hits:
         reasons = []
@@ -214,7 +289,11 @@ def compute_verdict(protocol: EvidenceProtocol, config: VerdictConfig | None = N
     for layer in _layer_list(protocol):
         if layer.status == "ran" and layer.score is not None:
             votes = _layer_votes(layer) and not (
-                layer.name == "global" and anatomy_hand_vetoes_l0(protocol, config)
+                layer.name == "global"
+                and (
+                    anatomy_hand_vetoes_l0(protocol, config)
+                    or hand_crop_vetoes_l0(protocol, config)
+                )
             )
             findings.append(
                 f"layer.{layer.name} [{('SIGNAL' if votes else 'ok')}] "

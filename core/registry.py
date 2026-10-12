@@ -19,7 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-PROTOCOL_VERSION = "1.4.0"
+PROTOCOL_VERSION = "1.4.1"
 
 Point2D = tuple[float, float]
 BBox2D = tuple[float, float, float, float]  # (x1, y1, x2, y2) in pixels
@@ -170,6 +170,8 @@ class DetectorResult(_Schema):
     view: str = "full"
     view_scores: dict[str, float] = Field(default_factory=dict)
     views_disagree: bool = False
+    # Pixel boxes for scored views (full/left/right/hand_*), for overlay only.
+    view_boxes: dict[str, BBox2D] = Field(default_factory=dict)
 
 
 class HandMap(_Schema):

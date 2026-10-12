@@ -316,6 +316,84 @@ def test_tiles_disagree_yields_to_hard_geometry():
     assert "geometry" in fusion
 
 
+def test_hand_crop_probe_vetoes_l0_fp():
+    """L0 hand-crop below low threshold vetoes full-frame generated on clean hands."""
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_NO_SIGNAL, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="hand.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.99,
+            logit=5.0,
+            decision="generated",
+            high_threshold=0.596,
+            low_threshold=0.066,
+            view_scores={"full": 0.99, "hand_0": 0.02},
+            view_boxes={"hand_0": (10.0, 10.0, 80.0, 80.0)},
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global",
+                status="ran",
+                score=0.99,
+                signal=True,
+                metrics={"hand_crop_min": 0.02},
+            ),
+            anatomy=LayerScore(
+                name="anatomy",
+                status="ran",
+                score=0.0,
+                signal=False,
+                metrics={"hand_count": 1.0, "face_count": 0.0, "hand_span": 0.3},
+            ),
+        ),
+    )
+    _, decision, fusion = fuse_layers(protocol)
+    assert decision == "real"
+    assert "hand_crop" in fusion
+
+
+def test_hand_crop_disagree_with_face_forces_uncertain():
+    """Selfie+hands: face blocks map veto, but hand crop << full → uncertain."""
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_INCONCLUSIVE, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="selfie.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.64,
+            logit=0.5,
+            decision="generated",
+            high_threshold=0.596,
+            low_threshold=0.066,
+            view_scores={"full": 0.64, "hand_0": 0.01},
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global", status="ran", score=0.64, signal=True, metrics={"hand_crop_min": 0.01}
+            ),
+            anatomy=LayerScore(
+                name="anatomy",
+                status="ran",
+                score=0.0,
+                signal=False,
+                metrics={"hand_count": 2.0, "face_count": 478.0, "hand_span": 0.29},
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "uncertain"
+    assert label == LABEL_INCONCLUSIVE
+    assert fusion == "L0_hand_crop_disagree"
+
+
 def test_soft_artifacts_evidence_does_not_overturn_l0_real():
     """Artifacts may appear as Evidence WARNING but remain soft vs L0_real."""
     from core.registry import (

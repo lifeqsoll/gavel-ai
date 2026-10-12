@@ -116,7 +116,7 @@ class GavelPipeline:
                     ),
                 )
             )
-        detector, layers.global_layer = self._run_detector(image, checks)
+        detector, layers.global_layer = self._run_detector(image, checks, anatomy_map)
 
         protocol = EvidenceProtocol(
             image=ImageMetadata(file_name=image_name, width=width, height=height),
@@ -298,7 +298,10 @@ class GavelPipeline:
         )
 
     def _run_detector(
-        self, image: np.ndarray, checks: list[CheckRecord]
+        self,
+        image: np.ndarray,
+        checks: list[CheckRecord],
+        anatomy_map: AnatomyMap | None = None,
     ) -> tuple[DetectorResult | None, LayerScore]:
         if self.learned_detector is None:
             return None, LayerScore(name="global", status="skipped", reason="no detector")
@@ -311,33 +314,87 @@ class GavelPipeline:
             return None, LayerScore(name="global", status="skipped", reason=str(exc))
         view = getattr(output, "view", "full")
         view_scores = dict(getattr(output, "view_scores", None) or {})
+        view_boxes = dict(getattr(output, "view_boxes", None) or {})
         views_disagree = bool(getattr(output, "views_disagree", False))
+
+        # Extra L0 probes on dominant hand crops (not a symbolic layer): helps veto
+        # stock close-up FPs when the full-frame CLIP score is spuriously high.
+        hand_probs: list[float] = []
+        score_bbox = getattr(self.learned_detector, "score_bbox", None)
+        if callable(score_bbox) and anatomy_map is not None and anatomy_map.hands:
+            h, w = image.shape[:2]
+            min_side = float(min(h, w)) or 1.0
+            for idx, hand in enumerate(anatomy_map.hands):
+                if len(hand.landmarks_px) < 5:
+                    continue
+                xs = [p[0] for p in hand.landmarks_px]
+                ys = [p[1] for p in hand.landmarks_px]
+                span = max(max(xs) - min(xs), max(ys) - min(ys)) / min_side
+                if span < 0.10:
+                    continue
+                pad = 0.15 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+                bbox = (
+                    max(0.0, min(xs) - pad),
+                    max(0.0, min(ys) - pad),
+                    min(float(w - 1), max(xs) + pad),
+                    min(float(h - 1), max(ys) + pad),
+                )
+                try:
+                    prob = float(score_bbox(image, bbox))
+                except _STAGE_ERRORS as exc:
+                    logger.warning("hand crop L0 skipped: %s", exc)
+                    continue
+                key = f"hand_{idx}"
+                view_scores[key] = prob
+                view_boxes[key] = bbox
+                hand_probs.append(prob)
+
+        # Primary decision stays max over full/left/right only (diptych rule).
+        # Hand crops are probes for fusion veto, not for raising the generation score.
+        tile_keys = [k for k in view_scores if not k.startswith("hand_")]
+        tile_best = max((view_scores[k] for k in tile_keys), default=float(output.probability))
+        primary_prob = float(tile_best)
+        primary_decision = output.thresholds.decide(primary_prob)
+        # Keep logit from original best tile if still the winner; else leave as-is.
+        primary_logit = float(output.logit)
+        primary_view = view
+        for k in tile_keys:
+            if view_scores[k] == primary_prob:
+                primary_view = k
+                break
+
         detector = DetectorResult(
             model=output.model,
-            probability=output.probability,
-            logit=output.logit,
-            decision=output.decision,
+            probability=primary_prob,
+            logit=primary_logit,
+            decision=primary_decision,
             high_threshold=output.thresholds.high,
             low_threshold=output.thresholds.low,
-            view=view,
+            view=primary_view,
             view_scores=view_scores,
             views_disagree=views_disagree,
+            view_boxes=view_boxes,
         )
-        reason = f"decision={output.decision}"
-        if view != "full":
-            reason += f" view={view}"
+        reason = f"decision={primary_decision}"
+        if primary_view != "full":
+            reason += f" view={primary_view}"
         if len(view_scores) > 1:
             parts = ",".join(f"{k}={v:.3f}" for k, v in sorted(view_scores.items()))
-            reason += f" tiles=[{parts}]"
+            reason += f" probes=[{parts}]"
         if views_disagree:
             reason += " tiles_disagree"
+        if hand_probs:
+            reason += f" hand_crop_min={min(hand_probs):.3f}"
         metrics = {f"view_{k}": float(v) for k, v in view_scores.items()}
         metrics["views_disagree"] = 1.0 if views_disagree else 0.0
+        if hand_probs:
+            metrics["hand_crop_min"] = float(min(hand_probs))
+            metrics["hand_crop_max"] = float(max(hand_probs))
         return detector, LayerScore(
             name="global",
             status="ran",
-            score=float(output.probability),
-            signal=output.decision == "generated",
+            score=primary_prob,
+            signal=primary_decision == "generated",
             reason=reason,
             metrics=metrics,
         )

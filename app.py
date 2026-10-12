@@ -1,8 +1,11 @@
 """Gradio web interface for Gavel AI: upload, analyze, overlay, verdict, protocol download.
 
+Preferred env (torch + open_clip + mediapipe already installed):
+    ~/gavel/train-venv/bin/python app.py
+
 Usage:
-    python app.py                 # http://127.0.0.1:7860
-    python app.py --share         # temporary public link
+    ~/gavel/train-venv/bin/python app.py                 # http://127.0.0.1:7860
+    ~/gavel/train-venv/bin/python app.py --share         # temporary public link
 """
 
 from __future__ import annotations
@@ -144,9 +147,11 @@ def _detector_summary(verdict: Verdict, protocol=None) -> str:
         "**Fusion A.** Signal if L0=`generated` OR a hard layer vote (geometry CRITICAL, "
         "anatomy evidence). Artifacts are a soft cue: they vote with L0 uncertain/generated, "
         "but cannot overturn L0=`real`. Wide tiles that disagree force `uncertain` unless a hard "
-        "layer already voted. A clean face-free hand close-up can veto an L0-only FP. "
+        "layer already voted. Face-free hand close-ups can veto L0 FP via map and/or L0 hand-crop "
+        "probe (overlay: white=tiles, blue=hand crops). "
         "Physics is disabled until a scene provider is wired. "
-        "Cyan/green/amber = anatomy map; magenta = anatomy anomaly. Only L0 is calibrated.",
+        "Cyan/green/amber = anatomy map; magenta = anatomy anomaly; yellow ART = soft artifacts. "
+        "Only L0 is calibrated.",
         "",
     ]
     if protocol is not None:

@@ -76,6 +76,7 @@ def render_overlay(image: np.ndarray, protocol: EvidenceProtocol) -> np.ndarray:
     canvas = image.copy() if image.ndim == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     if protocol.anatomy_map is not None:
         draw_anatomy_map(canvas, protocol.anatomy_map)
+    draw_l0_probes(canvas, protocol)
     for evidence in protocol.evidences:
         if evidence.geometry is not None:
             draw_geometry_evidence(canvas, evidence.geometry, evidence.evidence_id)
@@ -83,8 +84,48 @@ def render_overlay(image: np.ndarray, protocol: EvidenceProtocol) -> np.ndarray:
             draw_anatomy_evidence(canvas, evidence.anatomy)
         elif evidence.lighting is not None:
             draw_lighting_evidence(canvas, evidence.lighting)
+        elif evidence.artifacts is not None:
+            draw_artifacts_badge(canvas, evidence.artifacts.score)
     _draw_banner(canvas, protocol)
     return canvas
+
+
+def draw_l0_probes(canvas: np.ndarray, protocol: EvidenceProtocol) -> None:
+    """Outline L0 tile/hand crops with scores. White=tiles, blue=hand probes, thick=winner."""
+    detector = protocol.detector
+    if detector is None or not detector.view_boxes:
+        return
+    h, w = canvas.shape[:2]
+    for name, box in detector.view_boxes.items():
+        if name == "full" and len(detector.view_boxes) > 1:
+            continue  # full frame outline is noise when tiles/hands exist
+        x1, y1, x2, y2 = (int(round(v)) for v in box)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w - 1, x2), min(h - 1, y2)
+        score = detector.view_scores.get(name)
+        is_hand = name.startswith("hand_")
+        is_win = name == detector.view
+        color = (255, 0, 0) if is_hand else WHITE  # BGR blue = hand L0 probe
+        thickness = 3 if is_win else 1
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), BLACK, thickness + 2, cv2.LINE_AA)
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
+        label = name if score is None else f"{name} L0={score:.2f}"
+        _draw_boxed_label(canvas, label, x1 + 4, min(y2 - 8, h - 8), color)
+
+
+def draw_artifacts_badge(canvas: np.ndarray, score: float) -> None:
+    """Corner badge for soft artifact cue (does not paint a full heatmap)."""
+    h, w = canvas.shape[:2]
+    text = f"ART soft {score:.2f}"
+    (tw, th), _ = cv2.getTextSize(text, FONT, 0.5, 1)
+    pad = 6
+    x1 = w - tw - 2 * pad - 8
+    y1 = BANNER_HEIGHT + 8
+    x2 = w - 8
+    y2 = y1 + th + 2 * pad
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), BLACK, -1, cv2.LINE_AA)
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), YELLOW, 1, cv2.LINE_AA)
+    cv2.putText(canvas, text, (x1 + pad, y2 - pad), FONT, 0.5, YELLOW, 1, cv2.LINE_AA)
 
 
 def draw_anatomy_map(canvas: np.ndarray, anatomy_map: AnatomyMap) -> None:
@@ -272,6 +313,6 @@ def _draw_banner(canvas: np.ndarray, protocol: EvidenceProtocol) -> None:
     second = (
         f"{protocol.image.file_name}  |  symbolic findings: {len(protocol.evidences)}  "
         f"(CRITICAL {critical}, WARNING {warning})  |  {map_note}  |  "
-        f"cyan=face  green=pose  amber=hands  magenta=anatomy  red=geometry  yellow=lighting"
+        f"cyan=face green=pose amber=map magenta=anomaly white=L0-tile blue=L0-hand yellow=art/light"
     )
     cv2.putText(canvas, second, (8, 38), FONT, 0.45, WHITE, 1, cv2.LINE_AA)

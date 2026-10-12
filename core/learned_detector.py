@@ -56,9 +56,11 @@ class DetectorOutput:
     thresholds: DetectorThresholds
     model: str = MODEL_ID
     view: str = "full"
-    # Per-tile probabilities when a wide image is split (full/left/right).
+    # Per-tile / probe probabilities (full/left/right/hand_*).
     view_scores: dict[str, float] | None = None
     views_disagree: bool = False
+    # Image-pixel boxes for scored views (overlay grounding).
+    view_boxes: dict[str, tuple[float, float, float, float]] | None = None
 
 
 class LearnedDetector:
@@ -112,14 +114,36 @@ class LearnedDetector:
         return probability, logit
 
     @staticmethod
-    def _views(image_bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
+    def _views(image_bgr: np.ndarray) -> list[tuple[str, np.ndarray, tuple[float, float, float, float]]]:
         h, w = image_bgr.shape[:2]
-        views = [("full", image_bgr)]
+        views: list[tuple[str, np.ndarray, tuple[float, float, float, float]]] = [
+            ("full", image_bgr, (0.0, 0.0, float(w - 1), float(h - 1)))
+        ]
         if w / max(h, 1) >= WIDE_ASPECT_RATIO and w >= 64:
             mid = w // 2
-            views.append(("left", image_bgr[:, :mid]))
-            views.append(("right", image_bgr[:, mid:]))
+            views.append(("left", image_bgr[:, :mid], (0.0, 0.0, float(mid - 1), float(h - 1))))
+            views.append(
+                ("right", image_bgr[:, mid:], (float(mid), 0.0, float(w - 1), float(h - 1)))
+            )
         return views
+
+    def score_bbox(
+        self, image_bgr: np.ndarray, bbox: tuple[float, float, float, float]
+    ) -> float:
+        """Score one axis-aligned crop; used for anatomy hand probes."""
+        if image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
+            raise ValueError("expected a BGR image with shape (H, W, 3)")
+        self._ensure_backbone()
+        h, w = image_bgr.shape[:2]
+        x1, y1, x2, y2 = bbox
+        xa, xb = int(max(0, min(x1, x2))), int(min(w, max(x1, x2)))
+        ya, yb = int(max(0, min(y1, y2))), int(min(h, max(y1, y2)))
+        if xb - xa < 16 or yb - ya < 16:
+            raise ValueError("bbox too small to score")
+        crop = image_bgr[ya:yb, xa:xb]
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        prob, _ = self._score_rgb(rgb)
+        return prob
 
     def score(self, image_bgr: np.ndarray) -> DetectorOutput:
         if image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
@@ -130,10 +154,12 @@ class LearnedDetector:
         best_logit = 0.0
         best_view = "full"
         view_scores: dict[str, float] = {}
-        for name, tile_bgr in self._views(image_bgr):
+        view_boxes: dict[str, tuple[float, float, float, float]] = {}
+        for name, tile_bgr, box in self._views(image_bgr):
             rgb = cv2.cvtColor(tile_bgr, cv2.COLOR_BGR2RGB)
             prob, logit = self._score_rgb(rgb)
             view_scores[name] = prob
+            view_boxes[name] = box
             if prob > best_prob:
                 best_prob, best_logit, best_view = prob, logit, name
         disagree = False
@@ -147,4 +173,5 @@ class LearnedDetector:
             view=best_view,
             view_scores=view_scores,
             views_disagree=disagree,
+            view_boxes=view_boxes,
         )
