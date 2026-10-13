@@ -8,7 +8,7 @@ English: [README.md](README.md)
 
 | Слой | Роль | Голос |
 |---|---|---|
-| **L0 global** | CLIP ViT-L/14 + линейный зонд → `generated` / `uncertain` / `real` | Да (порог ≈ **0.596**) |
+| **L0 global** | CLIP ViT-L/14 + линейный зонд → `generated` / `uncertain` / `real` | Да (порог ≈ **0.910**) |
 | **L1 anatomy** | Карта face / pose / hands; WARNING только по 2D правилам рук | Да при evidence |
 | **L2 artifacts** | Kurtosis residual на «плоских» патчах | Мягкий: вместе с L0 uncertain/generated; **не перебивает L0=`real`** |
 | **L3 geometry** | LSD + точки схода (RANSAC) | Да только на **CRITICAL** (default thr **0.05**) |
@@ -89,7 +89,7 @@ Gradio (`app.py`): загрузка / сэмпл → Analyze → overlay + summa
 
 - OpenCLIP ViT-L/14, замороженный; голова — логистическая регрессия.
 - Нормализация общая для train/infer: resize → crop 448 → JPEG q90.
-- High ≈ 0.596 (калибровка ~1% FPR на real cal), low ≈ 0.066.
+- High ≈ 0.910 (калибровка ~1% FPR на real cal + capped hands), low ≈ 0.014.
 - Тайлы: full + left/right (wide) + q00–q11 (если L0∈[low,high]) + face_0; руки только veto/disagree.
 - Это **семантический** зонд, не форензика пикселей.
 

@@ -24,7 +24,7 @@
 
 | Layer | Role | Votes in fusion? |
 |---|---|---|
-| **L0 global** | Frozen CLIP ViT-L/14 + linear probe → score and `generated` / `uncertain` / `real` | Yes (calibrated high ≈ **0.596**) |
+| **L0 global** | Frozen CLIP ViT-L/14 + linear probe → score and `generated` / `uncertain` / `real` | Yes (calibrated high ≈ **0.910**) |
 | **L1 anatomy** | Face Mesh + Pose + Hands map; 2D distal hand WARNING only | Yes when hand evidence fires |
 | **L2 artifacts** | Flat-region residual kurtosis (soft cue) | Soft: with L0 uncertain/generated; **cannot overturn L0=`real`** |
 | **L3 geometry** | LSD (Hough fallback) + RANSAC vanishing points | Yes on **CRITICAL** only (default variance thr **0.05**) |
@@ -147,7 +147,7 @@ Overlay banner shows **Final** decision (after fusion) separately from raw L0 sc
 - Backbone: OpenCLIP **ViT-L/14** (`laion2b_s32b_b82k`), frozen.
 - Head: logistic regression on L2-normalized embeddings.
 - Preprocess: `normalize_pil` — scale so min side = 512, center-crop 448, JPEG quality 90 (same in training and inference).
-- Thresholds (shipped): **high ≈ 0.596** (≈1% FPR on real calibration), **low ≈ 0.066**.
+- Thresholds (shipped): **high ≈ 0.910** (≈1% FPR on real calibration incl. capped hands), **low ≈ 0.014**.
 - Wide images: also score left/right halves; keep max probability.
 - **2×2 quadrants** when L0 is still in the uncertain band (skip when already decisive — latency).
 - Extra probes: **face crop** (primary max), **hand crops** (veto / disagree only), **halves** composite (diptych cue), **plastic skin** (face Laplacian ± clipping), **edge coherence** (LSD density soft cue).

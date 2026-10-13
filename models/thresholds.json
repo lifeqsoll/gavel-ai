@@ -1,18 +1,24 @@
 {
-  "high": 0.5962293148040771,
-  "low": 0.06586100906133652,
+  "high": 0.9095709919929504,
+  "low": 0.01400796975940466,
   "real_sources": [
     "coco",
     "open_images",
     "wikimedia",
     "coco_scenes",
-    "wikimedia_scenes"
+    "wikimedia_scenes",
+    "wikimedia_faces",
+    "wikimedia_extra",
+    "real_hands"
   ],
   "gen_sources": [
     "nano_banana",
     "cf_commercial_0",
     "ecommerce_cc0",
-    "hmnsh_fake"
+    "hmnsh_fake",
+    "ai_vs_real_fake",
+    "diffusiondb",
+    "synthetic_characters"
   ],
   "high_meaning": "probability at or above which 1% of real calibration photos are flagged",
   "low_meaning": "probability below which 0.1% of generated calibration images fall"

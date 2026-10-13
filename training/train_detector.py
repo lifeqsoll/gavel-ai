@@ -70,6 +70,13 @@ def main() -> None:
     parser.add_argument("--feature-kind", choices=["normalized", "layers"], default="normalized")
     parser.add_argument("--layer-indices", default="0,1,2,3", help="layer positions in the layers file")
     parser.add_argument("--standardize", action="store_true")
+    parser.add_argument(
+        "--max-per-real-source",
+        type=int,
+        default=0,
+        help="if >0, randomly subsample each real source to at most N rows before split "
+        "(keeps HaGRID from drowning coco/scenes; 0 = use all)",
+    )
     args = parser.parse_args()
     features_dir = args.features_dir or args.root / (
         "features_normalized" if args.feature_kind == "normalized" else "features_layers"
@@ -107,9 +114,16 @@ def main() -> None:
     real = {}
     for name in real_names:
         try:
-            real[name] = load(name)[0]
+            x = load(name)[0]
         except FileNotFoundError:
             print(f"skip missing real source: {name}", flush=True)
+            continue
+        if args.max_per_real_source and len(x) > args.max_per_real_source:
+            pick = rng.choice(len(x), size=args.max_per_real_source, replace=False)
+            pick.sort()
+            x = x[pick]
+            print(f"subsample {name}: {args.max_per_real_source} / kept", flush=True)
+        real[name] = x
     real_names = list(real)
     if not real_names:
         raise RuntimeError("no real training sources available")

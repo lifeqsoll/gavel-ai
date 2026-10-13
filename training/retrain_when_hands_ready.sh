@@ -20,9 +20,13 @@ if [[ ! -f "$HANDS_NPZ" ]]; then
 fi
 
 cd "$REPO"
+# Cap each real source (esp. HaGRID ~600k) so hands hard-negs help without
+# drowning coco/scenes — full 605k hands failed florence (FP) while gym stayed veto-only.
+MAX_PER_REAL="${MAX_PER_REAL:-20000}"
 $PY -u training/train_detector.py --root "$ROOT" \
   --real-sources coco,open_images,wikimedia,coco_scenes,wikimedia_scenes,wikimedia_faces,wikimedia_extra,real_hands \
   --gen-sources nano_banana,cf_commercial_0,ecommerce_cc0,hmnsh_fake,ai_vs_real_fake,diffusiondb,synthetic_characters \
+  --max-per-real-source "$MAX_PER_REAL" \
   --out-dir "$OUT"
 
 echo "=== sample gate (strict hand) ==="
