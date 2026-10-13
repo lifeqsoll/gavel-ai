@@ -77,6 +77,38 @@ def main() -> None:
         help="if >0, randomly subsample each real source to at most N rows before split "
         "(keeps HaGRID from drowning coco/scenes; 0 = use all)",
     )
+    parser.add_argument(
+        "--max-real-source",
+        action="append",
+        default=[],
+        metavar="NAME=N",
+        help="per-source cap NAME=N (overrides --max-per-real-source for that name); repeatable",
+    )
+    parser.add_argument(
+        "--calibrate-real-sources",
+        default="",
+        help="comma-separated real sources used for the high-threshold 1%% FPR quantile; "
+        "empty = all real sources in --real-sources. Train still uses all real sources. "
+        "Example: coco,open_images,coco_scenes (exclude real_hands from thr flood).",
+    )
+    parser.add_argument(
+        "--real-source-weight",
+        action="append",
+        default=[],
+        metavar="NAME=W",
+        help="multiply sample_weight for that real source's train rows (default 1.0); repeatable",
+    )
+    parser.add_argument(
+        "--no-class-weight",
+        action="store_true",
+        help="disable LogisticRegression class_weight='balanced'",
+    )
+    parser.add_argument(
+        "--C",
+        default="",
+        help="comma-separated C values to try (default: 0.1,0.3,1,3,10); "
+        "single value forces that C",
+    )
     args = parser.parse_args()
     features_dir = args.features_dir or args.root / (
         "features_normalized" if args.feature_kind == "normalized" else "features_layers"
@@ -111,6 +143,13 @@ def main() -> None:
     pos_x = np.concatenate(pos_parts)
 
     pos_tr, pos_ca, pos_te = split_indices(len(pos_x), rng)
+    per_source_cap: dict[str, int] = {}
+    for item in args.max_real_source:
+        if "=" not in item:
+            raise RuntimeError(f"--max-real-source expected NAME=N, got {item!r}")
+        src, _, raw_n = item.partition("=")
+        per_source_cap[src.strip()] = int(raw_n)
+
     real = {}
     for name in real_names:
         try:
@@ -118,11 +157,12 @@ def main() -> None:
         except FileNotFoundError:
             print(f"skip missing real source: {name}", flush=True)
             continue
-        if args.max_per_real_source and len(x) > args.max_per_real_source:
-            pick = rng.choice(len(x), size=args.max_per_real_source, replace=False)
+        cap = per_source_cap.get(name, args.max_per_real_source)
+        if cap and len(x) > cap:
+            pick = rng.choice(len(x), size=cap, replace=False)
             pick.sort()
             x = x[pick]
-            print(f"subsample {name}: {args.max_per_real_source} / kept", flush=True)
+            print(f"subsample {name}: {cap} kept", flush=True)
         real[name] = x
     real_names = list(real)
     if not real_names:
@@ -139,28 +179,60 @@ def main() -> None:
             cf_x = scaler.transform(cf_x)
         real = {n: scaler.transform(x) for n, x in real.items()}
 
-    X_train = np.concatenate([pos_x[pos_tr]] + [real[n][splits[n][0]] for n in real_names])
+    source_w: dict[str, float] = {}
+    for item in args.real_source_weight:
+        if "=" not in item:
+            raise RuntimeError(f"--real-source-weight expected NAME=W, got {item!r}")
+        src, _, raw_w = item.partition("=")
+        source_w[src.strip()] = float(raw_w)
+        print(f"real-source-weight {src.strip()}={raw_w}", flush=True)
+
+    train_blocks = [pos_x[pos_tr]] + [real[n][splits[n][0]] for n in real_names]
+    X_train = np.concatenate(train_blocks)
     y_train = np.concatenate([np.ones(len(pos_tr))] + [np.zeros(len(splits[n][0])) for n in real_names])
+    sw_parts = [np.ones(len(pos_tr), dtype=np.float64)]
+    for n in real_names:
+        w = float(source_w.get(n, 1.0))
+        sw_parts.append(np.full(len(splits[n][0]), w, dtype=np.float64))
+    sample_weight = np.concatenate(sw_parts)
+    # Model-selection calib: all reals. High-threshold calib: optional subset.
     real_calib = np.concatenate([real[n][splits[n][1]] for n in real_names])
+    calib_names = [n.strip() for n in args.calibrate_real_sources.split(",") if n.strip()]
+    if calib_names:
+        missing = [n for n in calib_names if n not in real]
+        if missing:
+            raise RuntimeError(f"--calibrate-real-sources not in loaded reals: {missing}")
+        real_thr_calib = np.concatenate([real[n][splits[n][1]] for n in calib_names])
+        print(f"high-threshold calib sources: {calib_names} (n={len(real_thr_calib)})", flush=True)
+    else:
+        calib_names = list(real_names)
+        real_thr_calib = real_calib
     X_calib = np.concatenate([pos_x[pos_ca], real_calib])
     y_calib = np.concatenate([np.ones(len(pos_ca)), np.zeros(len(real_calib))])
 
+    cw = None if args.no_class_weight else "balanced"
+    if args.C.strip():
+        c_grid = tuple(float(x) for x in args.C.split(",") if x.strip())
+    else:
+        c_grid = (0.1, 0.3, 1.0, 3.0, 10.0)
     best = None
-    for c in (0.1, 0.3, 1.0, 3.0, 10.0):
-        clf = LogisticRegression(C=c, max_iter=2000, class_weight="balanced")
-        clf.fit(X_train, y_train)
+    for c in c_grid:
+        clf = LogisticRegression(C=c, max_iter=2000, class_weight=cw)
+        clf.fit(X_train, y_train, sample_weight=sample_weight)
         auc = roc_auc_score(y_calib, clf.predict_proba(X_calib)[:, 1])
         if best is None or auc > best[0]:
             best = (auc, c, clf)
     _, chosen_c, clf = best
+    print(f"chosen C={chosen_c} class_weight={cw!r} grid={c_grid}", flush=True)
 
     # Thresholds come from calibration splits only, never from test splits.
     gen_calib_scores = clf.predict_proba(pos_x[pos_ca])[:, 1]
-    real_calib_scores = clf.predict_proba(real_calib)[:, 1]
+    real_calib_scores = clf.predict_proba(real_thr_calib)[:, 1]
     thresholds = {
         "high": float(np.quantile(real_calib_scores, 0.99)),
         "low": float(np.quantile(gen_calib_scores, 0.001)),
         "real_sources": real_names,
+        "calibrate_real_sources": calib_names,
         "gen_sources": gen_names,
         "high_meaning": "probability at or above which 1% of real calibration photos are flagged",
         "low_meaning": "probability below which 0.1% of generated calibration images fall",
