@@ -68,6 +68,20 @@ def _build_pipeline(geometry_method: str, variance_threshold: float) -> GavelPip
     )
 
 
+def _soft_cues_markdown(protocol) -> list[str]:
+    metrics = protocol.layers.global_layer.metrics or {}
+    flags = []
+    if float(metrics.get("plastic_skin") or 0.0) >= 1.0:
+        flags.append("plastic_skin")
+    if float(metrics.get("halves_disagree") or 0.0) >= 1.0:
+        flags.append("halves_disagree")
+    if float(metrics.get("edge_coherent") or 0.0) >= 1.0:
+        flags.append("edge_coherent")
+    if not flags:
+        return []
+    return ["**Soft cues (L0 metrics)**", "", f"- {', '.join(flags)}", ""]
+
+
 def _layers_markdown(protocol) -> list[str]:
     lines = ["**Layers**", ""]
     layers = protocol.layers
@@ -80,10 +94,7 @@ def _layers_markdown(protocol) -> list[str]:
     ):
         layer = getattr(layers, key)
         if layer.status == "skipped":
-            note = layer.reason
-            if layer.name == "physics":
-                note = "disabled until scene provider — does not vote"
-            lines.append(f"- {title}: skipped ({note})")
+            lines.append(f"- {title}: skipped ({layer.reason})")
         else:
             score_val = layer.score
             soft_blocked = (
@@ -108,6 +119,7 @@ def _layers_markdown(protocol) -> list[str]:
             score = "n/a" if score_val is None else f"{score_val:.3f}"
             lines.append(f"- {title}: score={score}, {vote}: {layer.reason}")
     lines.append("")
+    lines += _soft_cues_markdown(protocol)
     return lines
 
 
@@ -145,11 +157,11 @@ def _detector_summary(verdict: Verdict, protocol=None) -> str:
         f"Coverage: {verdict.coverage_note}",
         "",
         "**Fusion A.** Signal if L0=`generated` OR a hard layer vote (geometry CRITICAL, "
-        "anatomy evidence). Artifacts are a soft cue: they vote with L0 uncertain/generated, "
-        "but cannot overturn L0=`real`. Wide tiles that disagree force `uncertain` unless a hard "
-        "layer already voted. Face-free hand close-ups can veto L0 FP via map and/or L0 hand-crop "
-        "probe (overlay: white=tiles, blue=hand crops). "
-        "Physics is disabled until a scene provider is wired. "
+        "anatomy evidence, physics evidence). Artifacts are a soft cue: they vote with L0 "
+        "uncertain/generated, but cannot overturn L0=`real`. Wide tiles that disagree force "
+        "`uncertain` unless a hard layer already voted. Face-free hand close-ups can veto L0 FP "
+        "via map and/or L0 hand-crop probe (overlay: white=tiles, blue=hand crops). "
+        "Physics uses classical shadow pairing; skipped when fewer than two rays. "
         "Cyan/green/amber = anatomy map; magenta = anatomy anomaly; yellow ART = soft artifacts. "
         "Only L0 is calibrated.",
         "",

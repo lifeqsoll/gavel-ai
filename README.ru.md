@@ -12,7 +12,7 @@ English: [README.md](README.md)
 | **L1 anatomy** | Карта face / pose / hands; WARNING только по 2D правилам рук | Да при evidence |
 | **L2 artifacts** | Kurtosis residual на «плоских» патчах | Мягкий: вместе с L0 uncertain/generated; **не перебивает L0=`real`** |
 | **L3 geometry** | LSD + точки схода (RANSAC) | Да только на **CRITICAL** (default thr **0.05**) |
-| **L4 physics** | Свет / тени | Пока skipped |
+| **L4 physics** | Свет / тени (классический scene provider) | Да при lighting evidence |
 
 **Fusion A:** финал `generated`, если L0=`generated` или есть жёсткий голос слоя.
 
@@ -45,11 +45,12 @@ English: [README.md](README.md)
 ## Архитектура
 
 ```
-agents/       LSD, MediaPipe anatomy, light stub
+agents/       LSD, MediaPipe anatomy, classical shadow scene
 core/         pipeline, L0, fusion (verdict), validators
 visualizer/   overlay (карта + символьные метки)
 app.py        Gradio
 analyze.py    CLI
+api.py        HTTP API (API key)
 training/     extract / train / eval_samples_gate / calibrate_artifacts
 models/       shipped weights + thresholds (exp_* в .gitignore)
 samples/real/ лицензионные тестовые фото
@@ -74,6 +75,7 @@ pip install -r requirements.txt
 python -m pytest -q
 python app.py --share
 python analyze.py samples/real/*.jpg --out-dir results
+GAVEL_API_KEYS=dev-key python api.py
 ```
 
 Шипнутые файлы: `models/detector_weights.npz`, `models/thresholds.json`, `models/layer_thresholds.json`, `models/metrics.json`.
@@ -93,31 +95,41 @@ Gradio (`app.py`): загрузка / сэмпл → Analyze → overlay + summa
 - Тайлы: full + left/right (wide) + q00–q11 (если L0∈[low,high]) + face_0; руки только veto/disagree.
 - Это **семантический** зонд, не форензика пикселей.
 
-## Обучение и гейт
+## HTTP API
 
-Датасеты снаружи репо (например `/mnt/disk-e/gavel-data`). Не тащить `ai_vs_real_real` в train. `bushon*` не входит в `real_hands` extract (leave-out).
+Для TG-бота, сайта или любого HTTP-клиента. Ключ: `X-API-Key` или `Authorization: Bearer`. Список ключей: env `GAVEL_API_KEYS` (через запятую). Без ключей сервер не стартует.
 
 ```bash
-python training/eval_samples_gate.py
-python training/eval_hardneg_local.py
-python training/eval_faces_local.py
-python training/calibrate_artifacts.py --root /mnt/disk-e/gavel-data
-
-# После HaGRID/wiki/11k под $ROOT/real/hands/
-python training/extract_features.py --source real_hands --root "$ROOT"
-./training/retrain_when_hands_ready.sh
+GAVEL_API_KEYS=dev-key python api.py
+curl -s -X POST http://127.0.0.1:8000/v1/analyze \
+  -H "X-API-Key: dev-key" \
+  -F "file=@samples/real/real_street_florence.jpg"
 ```
 
-Ship вручную только при GATE PASS (+ hardneg) и нормальных метриках (не «всё uncertain»).
+`GET /health` без ключа. Ответ: `decision`, `fusion`, `protocol`, опционально `overlay_png_base64`.
+
+## Обучение и гейт
+
+Датасеты снаружи репо (например `/mnt/disk-e/gavel-data`). Канон: `training/train_detector.py`. Research-only: `train_cnn.py`, `extract_layers.py`, `train_head.py`. Не тащить `ai_vs_real_real` в train.
+
+```bash
+python training/eval_samples_gate.py --strict-hand
+python training/eval_hardneg_local.py
+python training/eval_faces_local.py
+MAX_REAL_HANDS=20000 OUT=models/exp_hands_cap20k ./training/retrain_when_hands_ready.sh
+python training/calibrate_artifacts.py --root /mnt/disk-e/gavel-data
+```
+
+Ship вручную только при GATE PASS (+ hardneg) и нормальных метриках.
 
 ## Ограничения
 
-1. Stock close-up рук — L0 может дать ~0.99; пока спасает `anatomy_hand_veto` (лечится retrain на hands).
+1. Stock close-up рук — L0 может дать высокий score; fusion снимает через `anatomy_hand_veto`.
 2. Artifacts на ночи/текстуре могут гореть, но не перебивают L0=`real`.
 3. Geometry при thr 0.02 ложно срабатывает на реальных параллелях.
-4. Physics не подключён.
+4. Physics: классический pairing теней; часто skipped, если лучей меньше двух.
 5. Часть OOD AI всё ещё слабая без новых весов; диптихи / локальный AI закрываются зондами (halves/quads).
-6. Не использовать как единственное «доказательство».
+6. Не использовать как единственное доказательство.
 
 ## Тесты
 

@@ -1,9 +1,8 @@
 """Learned generated-image detector: frozen CLIP ViT-L/14 features and a linear head.
 
-The head weights and decision thresholds are produced by
-training/train_two_real.py and stored as models/detector_weights.npz and
-models/thresholds.json. Only the head and thresholds ship with the project.
-The CLIP backbone is downloaded by open_clip on first use and requires torch.
+Head and thresholds come from training/train_detector.py
+(models/detector_weights.npz, models/thresholds.json). The CLIP backbone is
+downloaded by open_clip on first use and needs torch.
 """
 
 from __future__ import annotations

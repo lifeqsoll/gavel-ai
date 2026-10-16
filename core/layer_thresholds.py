@@ -20,7 +20,7 @@ DEFAULT_PATH = ROOT / "models" / "layer_thresholds.json"
 @dataclass(frozen=True)
 class LayerThresholds:
     # L0: mirror of calibrated detector high (informational for UI/docs).
-    global_high: float = 0.5962293148040771
+    global_high: float = 0.9095709919929504
     anatomy: float = 0.5
     artifacts: float = 0.95
     physics: float = 0.5
@@ -46,7 +46,7 @@ def load_layer_thresholds(path: Path | None = None) -> LayerThresholds:
         return LayerThresholds()
     raw = json.loads(p.read_text(encoding="utf-8"))
     return LayerThresholds(
-        global_high=float(raw.get("global", {}).get("high", 0.5962293148040771)),
+        global_high=float(raw.get("global", {}).get("high", 0.9095709919929504)),
         anatomy=float(raw.get("anatomy", {}).get("signal_threshold", 0.5)),
         artifacts=float(raw.get("artifacts", {}).get("signal_threshold", 0.95)),
         physics=float(raw.get("physics", {}).get("signal_threshold", 0.5)),

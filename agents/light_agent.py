@@ -1,7 +1,7 @@
 """Light extractor. Produces shadow observations from a pluggable scene provider.
 
-A real segmentation backend can be plugged in as `scene_provider`. Without one,
-extract() raises NotImplementedError and the pipeline records the check as skipped.
+Default provider is agents.shadow_scene.extract_shadow_observations.
+Pass scene_provider=None to force skip.
 """
 
 from __future__ import annotations
@@ -10,13 +10,16 @@ from typing import Callable, Sequence
 
 import numpy as np
 
+from agents.shadow_scene import extract_shadow_observations
 from core.observations import LightObservation
 
 SceneProvider = Callable[[np.ndarray], Sequence[LightObservation]]
 
 
 class LightAgent:
-    def __init__(self, scene_provider: SceneProvider | None = None) -> None:
+    def __init__(
+        self, scene_provider: SceneProvider | None = extract_shadow_observations
+    ) -> None:
         self._provider = scene_provider
 
     def extract(self, image: np.ndarray) -> list[LightObservation]:

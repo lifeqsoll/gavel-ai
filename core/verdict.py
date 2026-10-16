@@ -10,7 +10,7 @@ L0-only `generated` vote. Stock close-up hands are a known CLIP FP; AI portraits
 faces so they are not vetoed. Does not suppress artifacts/geometry votes.
 
 Each layer sets `signal` with its own threshold (models/layer_thresholds.json):
-    L0 ~0.596 (calibrated), artifacts 0.7 (flat-kurtosis), anatomy/physics 0.5,
+    L0 from thresholds.json, artifacts 0.95 (flat-kurtosis), anatomy/physics 0.5,
     geometry votes on CRITICAL perspective evidence.
 Symbolic evidence is listed as explanation. Layer scores are on protocol.layers.
 Without a detector result, falls back to the heuristic anomaly score.

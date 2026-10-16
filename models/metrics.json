@@ -13,6 +13,16 @@
       "wikimedia_extra",
       "real_hands"
     ],
+    "calibrate_real_sources": [
+      "coco",
+      "open_images",
+      "wikimedia",
+      "coco_scenes",
+      "wikimedia_scenes",
+      "wikimedia_faces",
+      "wikimedia_extra",
+      "real_hands"
+    ],
     "gen_sources": [
       "nano_banana",
       "cf_commercial_0",

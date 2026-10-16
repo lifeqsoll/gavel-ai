@@ -15,10 +15,11 @@
 7. [Learned detector (L0)](#learned-detector-l0)
 8. [Layers and fusion](#layers-and-fusion)
 9. [Protocol / overlay](#protocol--overlay)
-10. [Training and eval](#training-and-eval)
-11. [Known limitations](#known-limitations)
-12. [Tests](#tests)
-13. [Image sources and licenses](#image-sources-and-licenses)
+10. [HTTP API](#http-api)
+11. [Training and eval](#training-and-eval)
+12. [Known limitations](#known-limitations)
+13. [Tests](#tests)
+14. [Image sources and licenses](#image-sources-and-licenses)
 
 ## What it does
 
@@ -28,7 +29,7 @@
 | **L1 anatomy** | Face Mesh + Pose + Hands map; 2D distal hand WARNING only | Yes when hand evidence fires |
 | **L2 artifacts** | Flat-region residual kurtosis (soft cue) | Soft: with L0 uncertain/generated; **cannot overturn L0=`real`** |
 | **L3 geometry** | LSD (Hough fallback) + RANSAC vanishing points | Yes on **CRITICAL** only (default variance thr **0.05**) |
-| **L4 physics** | Lighting / shadow rays | Skipped until a scene provider is wired |
+| **L4 physics** | Lighting / shadow rays (classical scene provider) | Yes on lighting evidence |
 
 **Fusion A:** final decision is `generated` if L0=`generated` **or** a hard layer votes.  
 Exceptions:
@@ -63,7 +64,7 @@ Wide images (side-by-side diptychs) also score **left/right** tiles; the highest
 
 ```
 gavel-ai/
-├── agents/                 perception (LSD geometry, MediaPipe anatomy, light stub)
+├── agents/                 perception (LSD, MediaPipe anatomy, classical shadows)
 ├── core/
 │   ├── pipeline.py         orchestrates L0 + layers → EvidenceProtocol + overlay
 │   ├── learned_detector.py CLIP features → linear probe (multi-tile on wide images)
@@ -74,6 +75,7 @@ gavel-ai/
 ├── visualizer/overlay.py   cyan/green/amber map + red/yellow symbolic marks
 ├── app.py                  Gradio UI
 ├── analyze.py              CLI batch
+├── api.py                  HTTP API (API key auth)
 ├── training/               extract / train / sample+hardneg gates / calibrate artifacts
 ├── models/                 shipped weights + thresholds (experiments gitignored)
 ├── assets/readme/          UI screenshots
@@ -122,6 +124,7 @@ python -m pytest -q
 python app.py                  # local Gradio
 python app.py --share          # temporary public link
 python analyze.py samples/real/*.jpg --out-dir results
+GAVEL_API_KEYS=dev-key python api.py   # HTTP API on :8000
 python mock_run.py             # synthetic scene smoke test
 ```
 
@@ -183,39 +186,53 @@ python analyze.py path/to/image.jpg --out-dir results
 # writes results/<name>.json and results/<name>_overlay.png
 ```
 
+## HTTP API
+
+For Telegram bots, websites, or any HTTP client. Auth: `X-API-Key` or `Authorization: Bearer <key>`. Keys from env `GAVEL_API_KEYS` (comma-separated). Server refuses to start if that env is empty.
+
+```bash
+GAVEL_API_KEYS=dev-key,other-key python api.py
+# listens on 0.0.0.0:8000 (override with --host / --port)
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/analyze \
+  -H "X-API-Key: dev-key" \
+  -F "file=@samples/real/real_street_florence.jpg" \
+  -F "include_overlay=false"
+```
+
+`GET /health` needs no key. Response of `/v1/analyze` includes `decision`, `label`, `fusion`, `probability`, full `protocol`, and optional `overlay_png_base64`.
+
 ## Training and eval
 
 Training data and feature caches live **outside** the git repo (e.g. `/mnt/disk-e/gavel-data`). Experiment dirs `models/exp_*` are gitignored.
 
-Do **not** mix `ai_vs_real_real` into training reals — earlier runs pushed high thr ~0.9 and flooded `uncertain`.
+Canonical trainer: `training/train_detector.py`. Research-only (not used in inference): `train_cnn.py`, `extract_layers.py`, `train_head.py`.
+
+Do **not** mix `ai_vs_real_real` into training reals.
 
 ```bash
-# Checked-in samples (+ optional leave-out bushon_eval / wiki on disk-E)
-python training/eval_samples_gate.py
+python training/eval_samples_gate.py --strict-hand
 python training/eval_hardneg_local.py
-python training/eval_faces_local.py   # plastic_skin sanity on real faces
+python training/eval_faces_local.py
 
-# Candidate weights after a hands retrain
+# Cap hands retrain then gate before ship
+MAX_REAL_HANDS=20000 OUT=models/exp_hands_cap20k ./training/retrain_when_hands_ready.sh
 python training/eval_samples_gate.py \
-  --weights models/exp_hands/detector_weights.npz \
-  --thresholds models/exp_hands/thresholds.json \
+  --weights models/exp_hands_cap20k/detector_weights.npz \
+  --thresholds models/exp_hands_cap20k/thresholds.json \
   --strict-hand
 
-# Recalibrate artifact vote threshold on on-disk Wikimedia reals
 python training/calibrate_artifacts.py --root /mnt/disk-e/gavel-data
-
-# After HaGRID / wiki / 11k hands land under $ROOT/real/hands/ (bushon* skipped)
-python training/extract_features.py --source real_hands --root "$ROOT"
-./training/retrain_when_hands_ready.sh
-# Ship only if GATE PASS (+ hardneg) and metrics look sane
 ```
 
 ## Known limitations
 
-1. **Stock close-ups** — L0 may score ~0.99 on real gym hands; fusion uses `anatomy_hand_veto` until hard-negatives are trained.
+1. **Stock close-ups** — L0 can still score high on real gym hands; fusion uses `anatomy_hand_veto` when the anatomy map is clean.
 2. **Artifacts** — kurtosis still lights up on some night/texture scenes; soft rule prevents overturning L0=`real`.
 3. **Geometry** — aggressive thresholds (0.02) FP on near-parallel real edges; default is **0.05**.
-4. **Physics** — skipped (no scene provider).
+4. **Physics** — classical HSV/contour pairing; often skipped when fewer than two shadow rays. Not a full scene understanding stack.
 5. **OOD AI** — remaining semantic FP/FN without new weights; diptychs / local AI patches are partly covered by halves / quads / edges probes.
 6. **Not proof** — do not use as sole evidence for moderation, legal, or journalism claims.
 
