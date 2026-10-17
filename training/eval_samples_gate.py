@@ -47,6 +47,11 @@ def main() -> int:
     parser.add_argument("--thresholds", type=Path, default=ROOT / "models" / "thresholds.json")
     parser.add_argument("--samples", type=Path, default=ROOT / "samples")
     parser.add_argument("--strict-hand", action="store_true", help="require real_hand_gym == real")
+    parser.add_argument(
+        "--require-l0-real-gym",
+        action="store_true",
+        help="gym must be real with L0 < high (no anatomy_hand_veto)",
+    )
     args = parser.parse_args()
 
     detector = LearnedDetector(weights_path=args.weights, thresholds_path=args.thresholds)
@@ -81,6 +86,25 @@ def main() -> int:
                         f"{path.name}: decision={verdict.decision} not in {sorted(allowed)} "
                         f"(fusion={verdict.fusion})"
                     )
+                if (
+                    args.require_l0_real_gym
+                    and path.name == "real_hand_gym.jpg"
+                    and verdict.decision == "real"
+                ):
+                    high = (
+                        result.protocol.detector.high_threshold
+                        if result.protocol.detector is not None
+                        else None
+                    )
+                    if l0 is not None and high is not None and l0 >= high:
+                        failures.append(
+                            f"{path.name}: L0={l0:.3f} >= high={high:.3f} "
+                            f"(still needs veto; fusion={verdict.fusion})"
+                        )
+                    if verdict.fusion and "anatomy_hand_veto" in verdict.fusion:
+                        failures.append(
+                            f"{path.name}: fusion still uses veto ({verdict.fusion})"
+                        )
             if path.name in EXPECT_NOT_REAL and verdict.decision == "real":
                 failures.append(f"{path.name}: FN decision=real (fusion={verdict.fusion})")
 

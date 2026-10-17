@@ -35,7 +35,8 @@ class VerdictConfig:
     anomalous_threshold: float = 0.5
     # Suppress L0-only generation when anatomy shows a clean dominant hand (no face).
     anatomy_veto_max_score: float = 0.1
-    anatomy_veto_min_hand_span: float = 0.12
+    # 0.08 covers bushon-scale hands; 0.12 left gym OK but missed smaller close-ups.
+    anatomy_veto_min_hand_span: float = 0.08
 
 
 @dataclass(frozen=True)
@@ -208,10 +209,11 @@ def hand_crop_vetoes_l0(protocol: EvidenceProtocol, config: VerdictConfig) -> bo
 
 
 def hand_crop_disagrees_l0(protocol: EvidenceProtocol, config: VerdictConfig) -> bool:
-    """Full-frame L0 generated but hand crop firmly real (often selfie+hands with a face).
+    """Full-frame L0 generated but hand crop much lower (selfie+hands with a face).
 
     Does not claim real — fusion should force uncertain when no hard layer votes.
-    Gap mirrors tiles_disagree (0.45) so AI faces with weird hands rarely trigger.
+    Gap mirrors tiles_disagree (0.45). Hand crop may sit in mid-band (not only <low):
+    bushon face+hand FPs had hand≈0.49 while full≈0.94.
     """
     detector = protocol.detector
     if detector is None or detector.decision != "generated":
@@ -231,7 +233,9 @@ def hand_crop_disagrees_l0(protocol: EvidenceProtocol, config: VerdictConfig) ->
     if hand_span < config.anatomy_veto_min_hand_span:
         return False
     hand_min = _hand_crop_min(protocol)
-    if hand_min is None or hand_min >= detector.low_threshold:
+    # Mid-band ceiling: below high and below 0.5 counts as "hand says less AI".
+    mid = min(float(detector.high_threshold), 0.5)
+    if hand_min is None or hand_min >= mid:
         return False
     return (detector.probability - hand_min) >= 0.45
 
@@ -260,6 +264,17 @@ def fuse_layers(
     soft_hits = [name for name in layer_hits if name in _SOFT_LAYER_VOTES]
     l0_generated = detector is not None and detector.decision == "generated"
     l0_real = detector is not None and detector.decision == "real"
+    # Soft artifacts FP on real hand close-ups and on wiki "hands" where MediaPipe
+    # finds no hands (anat skip / hands=0) — ignore alone cannot run; drop soft votes.
+    hand_closeup, _, _ = _anatomy_hand_context(protocol, config)
+    anatomy = protocol.layers.anatomy
+    hand_n_soft = _metric_float(anatomy.metrics or {}, "hand_count")
+    if hand_n_soft is None:
+        hand_n_soft = float(_parse_hand_count(anatomy.reason)) if anatomy.status == "ran" else 0.0
+    no_hand_map = anatomy.status != "ran" or hand_n_soft < 1
+    if hand_closeup or no_hand_map:
+        # Drop soft from voting; keep soft_hits for L0_real_soft_ignored fusion text.
+        layer_hits = list(hard_hits)
     if l0_real:
         # Soft cues cannot overturn calibrated L0_real.
         layer_hits = list(hard_hits)

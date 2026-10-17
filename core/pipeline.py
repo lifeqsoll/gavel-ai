@@ -251,7 +251,8 @@ class GavelPipeline:
 
         report = self.anatomy_validator.validate(scene.hands)
         evidences.extend(report.evidences)
-        face_count = len(anatomy_map.face_landmarks_px)
+        # Face Mesh returns hundreds of landmarks; fusion needs presence (0/1), not len().
+        face_present = 1 if anatomy_map.face_landmarks_px else 0
         pose_count = sum(1 for p in anatomy_map.pose_landmarks_px if p is not None)
         hand_count = len(anatomy_map.hands)
         checks.append(
@@ -259,7 +260,7 @@ class GavelPipeline:
                 check=name,
                 status="violation" if report.evidences else "passed",
                 reason=(
-                    f"face={face_count} pose={pose_count} hands={hand_count} "
+                    f"face={face_present} pose={pose_count} hands={hand_count} "
                     f"hand_evidence={'on' if self.anatomy_validator.config.emit_hand_evidence else 'off'}"
                 ),
             )
@@ -285,13 +286,13 @@ class GavelPipeline:
             reason=(
                 f"hand_warnings={len(report.evidences)} "
                 f"hands={hand_count} "
-                f"face={face_count} "
+                f"face={face_present} "
                 f"hand_span={hand_span:.3f}"
             ),
             metrics={
                 "hand_warnings": float(len(report.evidences)),
                 "hand_count": float(hand_count),
-                "face_count": float(face_count),
+                "face_count": float(face_present),
                 "pose_count": float(pose_count),
                 "hand_span": float(hand_span),
             },
@@ -352,8 +353,27 @@ class GavelPipeline:
         if self.learned_detector is None:
             return None, LayerScore(name="global", status="skipped", reason="no detector")
         name = "detector.learned"
+        # Stock hand close-ups: full-frame often OK; H14 quads FP (gym q00). Skip quads.
+        allow_quads = True
+        if anatomy_map is not None and anatomy_map.hands and not anatomy_map.face_landmarks_px:
+            h, w = image.shape[:2]
+            min_side = float(min(h, w)) or 1.0
+            span = 0.0
+            for hand in anatomy_map.hands:
+                if len(hand.landmarks_px) < 3:
+                    continue
+                xs = [p[0] for p in hand.landmarks_px]
+                ys = [p[1] for p in hand.landmarks_px]
+                span = max(span, max(max(xs) - min(xs), max(ys) - min(ys)) / min_side)
+            # Match VerdictConfig.anatomy_veto_min_hand_span (bushon-scale hands).
+            if span >= 0.08:
+                allow_quads = False
         try:
-            output = self.learned_detector.score(image)
+            score_fn = self.learned_detector.score
+            try:
+                output = score_fn(image, allow_quads=allow_quads)
+            except TypeError:
+                output = score_fn(image)
         except _STAGE_ERRORS as exc:
             logger.warning("%s skipped: %s", name, exc)
             checks.append(CheckRecord(check=name, status="skipped", reason=str(exc)))

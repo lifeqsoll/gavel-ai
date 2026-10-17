@@ -171,7 +171,7 @@ class LearnedDetector:
         prob, _ = self._score_rgb(rgb)
         return prob
 
-    def score(self, image_bgr: np.ndarray) -> DetectorOutput:
+    def score(self, image_bgr: np.ndarray, *, allow_quads: bool = True) -> DetectorOutput:
         if image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
             raise ValueError("expected a BGR image with shape (H, W, 3)")
         self._ensure_backbone()
@@ -197,7 +197,8 @@ class LearnedDetector:
             _score_tile(name, tile_bgr, box)
 
         # H14: quadrants only when L0 still in the uncertain band.
-        if self.thresholds.low <= best_prob < self.thresholds.high:
+        # Skip on face-free large-hand close-ups (stock gym: full OK, q00 FP).
+        if allow_quads and self.thresholds.low <= best_prob < self.thresholds.high:
             for name, tile_bgr, box in self._views(image_bgr, include_quads=True, include_center=False):
                 if name.startswith("q") and name not in view_scores:
                     _score_tile(name, tile_bgr, box)

@@ -41,13 +41,17 @@ def main() -> int:
     parser.add_argument("--faces", type=Path, default=DEFAULT_FACES)
     parser.add_argument("--samples", type=Path, default=ROOT / "samples")
     parser.add_argument("--limit-real", type=int, default=40)
+    parser.add_argument("--weights", type=Path, default=ROOT / "models" / "detector_weights.npz")
+    parser.add_argument("--thresholds", type=Path, default=ROOT / "models" / "thresholds.json")
     args = parser.parse_args()
 
     pipe = GavelPipeline(
         geometry_agent=GeometryAgent(method="lsd"),
         perspective_validator=PerspectiveValidator(PerspectiveConfig()),
         anatomy_agent=AnatomyAgent(),
-        learned_detector=LearnedDetector(),
+        learned_detector=LearnedDetector(
+            weights_path=args.weights, thresholds_path=args.thresholds
+        ),
     )
 
     failures: list[str] = []

@@ -214,6 +214,120 @@ def test_artifacts_cannot_overturn_l0_real():
     assert "artifacts" in fusion
 
 
+def test_soft_artifacts_ignored_on_face_free_hand_closeup():
+    """Wiki-style soft flat-kurtosis must not flip L0-uncertain hand close-ups to AI."""
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_INCONCLUSIVE, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="wiki_hand.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.40,
+            logit=-0.4,
+            decision="uncertain",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global", status="ran", score=0.40, signal=False, reason="decision=uncertain"
+            ),
+            anatomy=LayerScore(
+                name="anatomy",
+                status="ran",
+                score=0.0,
+                signal=False,
+                reason="hand_warnings=0 hands=1 face=0 hand_span=0.22",
+                metrics={"hand_span": 0.22, "face_count": 0.0, "hand_count": 1.0},
+            ),
+            artifacts=LayerScore(
+                name="artifacts", status="ran", score=1.0, signal=True, reason="flat_kurtosis=88.1"
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "uncertain"
+    assert label == LABEL_INCONCLUSIVE
+    assert "artifacts" not in fusion
+
+
+def test_soft_artifacts_ignored_when_no_hand_map():
+    """Wiki 'hands' with MediaPipe skip/hands=0: soft artifacts must not vote alone."""
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_INCONCLUSIVE, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="wiki_nohand.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.40,
+            logit=-0.4,
+            decision="uncertain",
+            high_threshold=0.596,
+            low_threshold=0.066,
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global", status="ran", score=0.40, signal=False, reason="decision=uncertain"
+            ),
+            anatomy=LayerScore(name="anatomy", status="skipped", reason="no hands"),
+            artifacts=LayerScore(
+                name="artifacts", status="ran", score=1.0, signal=True, reason="flat_kurtosis=88.1"
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "uncertain"
+    assert label == LABEL_INCONCLUSIVE
+    assert "artifacts" not in fusion
+
+
+def test_hand_crop_disagree_midband_with_face():
+    """Bushon-style: face blocks map veto; hand crop mid-band but gap>=0.45 → uncertain."""
+    from core.registry import DetectorResult, LayerScore, LayerScores
+    from core.verdict import LABEL_INCONCLUSIVE, fuse_layers
+
+    protocol = EvidenceProtocol(
+        image=ImageMetadata(file_name="bushon_face.png", width=100, height=100),
+        checks=PASSED,
+        evidences=[],
+        detector=DetectorResult(
+            model="test",
+            probability=0.941,
+            logit=2.8,
+            decision="generated",
+            high_threshold=0.910,
+            low_threshold=0.014,
+            view_scores={"full": 0.941, "hand_0": 0.49},
+        ),
+        layers=LayerScores(
+            global_layer=LayerScore(
+                name="global",
+                status="ran",
+                score=0.941,
+                signal=True,
+                metrics={"hand_crop_min": 0.49},
+            ),
+            anatomy=LayerScore(
+                name="anatomy",
+                status="ran",
+                score=0.0,
+                signal=False,
+                metrics={"hand_count": 1.0, "face_count": 1.0, "hand_span": 0.20},
+            ),
+        ),
+    )
+    label, decision, fusion = fuse_layers(protocol)
+    assert decision == "uncertain"
+    assert label == LABEL_INCONCLUSIVE
+    assert fusion == "L0_hand_crop_disagree"
+
+
 def test_anatomy_hand_veto_does_not_kill_ai_face():
     from core.registry import DetectorResult, LayerScore, LayerScores
     from core.verdict import LABEL_GENERATION_SIGNAL, fuse_layers

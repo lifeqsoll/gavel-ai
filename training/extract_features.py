@@ -137,8 +137,8 @@ def iter_real_hands(root: Path) -> Iterator[tuple[bytes, int, str]]:
     """User-provided real hand / close-up hard negatives.
 
     Drop images under ``real/hands/`` (any nesting). Used after you collect data;
-    see ``training/retrain_when_hands_ready.sh``. Skips ``bushon*`` dirs so
-    bushon_eval stays a leave-out pack for ``eval_hardneg_local.py``.
+    see ``training/retrain_when_hands_ready.sh``. Skips only ``bushon_eval`` so
+    train ``bushon/`` enters the probe while eval stays leave-out.
     Also streams ``11k_hands`` parquet shards (HF image column).
 
     Env ``REAL_HANDS_PER_DIR_LIMIT`` (default 3000): cap images per HaGRID gesture
@@ -153,13 +153,18 @@ def iter_real_hands(root: Path) -> Iterator[tuple[bytes, int, str]]:
     for child in sorted(hands_root.iterdir()) if hands_root.is_dir() else []:
         if not child.is_dir():
             continue
-        if child.name.startswith("bushon") or child.name in {".cache", ".git"}:
+        if child.name == "bushon_eval" or child.name in {".cache", ".git"}:
             continue
         if child.name.startswith("hagrid"):
             continue
         if child.name == "11k_hands":
             continue
-        yield from _iter_image_dir(child, "real-hands", label=0)
+        exclude: set[str] | None = None
+        if child.name == "bushon":
+            eval_dir = hands_root / "bushon_eval"
+            if eval_dir.is_dir():
+                exclude = {p.name for p in eval_dir.iterdir() if p.is_file()}
+        yield from _iter_image_dir(child, "real-hands", label=0, exclude_basenames=exclude)
 
     # HaGRID 512: stratified per gesture class.
     hagrid = hands_root / "hagrid_512" / "HaGRIDv2_dataset_512"
@@ -246,6 +251,7 @@ def _iter_image_dir(
     label: int = 1,
     min_side: int = 64,
     skip_name_prefixes: tuple[str, ...] = (),
+    exclude_basenames: set[str] | None = None,
 ) -> Iterator[tuple[bytes, int, str]]:
     """Yield RGB-capable images from a directory tree. Tiny files (below min_side) are skipped.
 
@@ -256,6 +262,7 @@ def _iter_image_dir(
 
     if not directory.is_dir():
         return
+    blocked = exclude_basenames or set()
     for dirpath, dirnames, filenames in os.walk(directory):
         # Prune caches / leave-out packs early.
         dirnames[:] = [
@@ -270,6 +277,8 @@ def _iter_image_dir(
                 dirnames[:] = []
                 continue
         for name in sorted(filenames):
+            if name in blocked:
+                continue
             path = Path(dirpath) / name
             if path.suffix.lower() not in IMAGE_SUFFIXES:
                 continue
