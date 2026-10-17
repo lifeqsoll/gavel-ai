@@ -29,7 +29,7 @@
 | **L1 anatomy** | Face Mesh + Pose + Hands map; 2D distal hand WARNING only | Yes when hand evidence fires |
 | **L2 artifacts** | Flat-region residual kurtosis (soft cue) | Soft: with L0 uncertain/generated; **cannot overturn L0=`real`** |
 | **L3 geometry** | LSD (Hough fallback) + RANSAC vanishing points | Yes on **CRITICAL** only (default variance thr **0.05**) |
-| **L4 physics** | Lighting / shadow rays (classical scene provider) | Yes on lighting evidence |
+| **L4 physics** | Lighting / shadow rays (classical scene provider) | Cue only (no fusion vote; classical FP on real hands) |
 
 **Fusion A:** final decision is `generated` if L0=`generated` **or** a hard layer votes.  
 Exceptions:
@@ -232,7 +232,7 @@ python training/calibrate_artifacts.py --root /mnt/disk-e/gavel-data
 1. **Stock close-ups** — L0 can still score high on real gym hands; fusion uses `anatomy_hand_veto` when the anatomy map is clean.
 2. **Artifacts** — kurtosis still lights up on some night/texture scenes; soft rule prevents overturning L0=`real`.
 3. **Geometry** — aggressive thresholds (0.02) FP on near-parallel real edges; default is **0.05**.
-4. **Physics** — classical HSV/contour pairing; often skipped when fewer than two shadow rays. Not a full scene understanding stack.
+4. **Physics** — classical HSV/contour pairing; layer runs for overlay but does not vote in fusion (FP on real hands/scenes).
 5. **OOD AI** — remaining semantic FP/FN without new weights; diptychs / local AI patches are partly covered by halves / quads / edges probes.
 6. **Not proof** — do not use as sole evidence for moderation, legal, or journalism claims.
 

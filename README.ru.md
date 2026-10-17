@@ -12,7 +12,7 @@ English: [README.md](README.md)
 | **L1 anatomy** | Карта face / pose / hands; WARNING только по 2D правилам рук | Да при evidence |
 | **L2 artifacts** | Kurtosis residual на «плоских» патчах | Мягкий: вместе с L0 uncertain/generated; **не перебивает L0=`real`** |
 | **L3 geometry** | LSD + точки схода (RANSAC) | Да только на **CRITICAL** (default thr **0.05**) |
-| **L4 physics** | Свет / тени (классический scene provider) | Да при lighting evidence |
+| **L4 physics** | Свет / тени (классический scene provider) | Только cue (не голосует; FP на real hands) |
 
 **Fusion A:** финал `generated`, если L0=`generated` или есть жёсткий голос слоя.
 
@@ -127,7 +127,7 @@ Ship вручную только при GATE PASS (+ hardneg) и нормаль�
 1. Stock close-up рук — L0 может дать высокий score; fusion снимает через `anatomy_hand_veto`.
 2. Artifacts на ночи/текстуре могут гореть, но не перебивают L0=`real`.
 3. Geometry при thr 0.02 ложно срабатывает на реальных параллелях.
-4. Physics: классический pairing теней; часто skipped, если лучей меньше двух.
+4. Physics: классический pairing теней; слой считается, но в fusion не голосует (FP на real).
 5. Часть OOD AI всё ещё слабая без новых весов; диптихи / локальный AI закрываются зондами (halves/quads).
 6. Не использовать как единственное доказательство.
 

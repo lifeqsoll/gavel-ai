@@ -4,15 +4,17 @@ Does not ship weights. Exit 0 only if hard rules pass.
 
 Hard fails:
   - any samples/ai_generated → decision == real
-  - real_street_florence.jpg → decision == generated
+  - real_street_florence.jpg / real_corridor_jama_masjid.jpg → decision == generated
   - real_hand_gym.jpg → decision == generated (unless --allow-gym-uncertain)
+  - fusion containing physics on a real leave-out (physics must not vote)
 
 Soft (printed, non-fatal unless --strict-bushon):
   - bushon_eval / wiki hands → decision == generated
+  - real leave-out flipped only by soft artifacts
 
 Usage:
     ~/gavel/train-venv/bin/python training/eval_hardneg_local.py
-    ~/gavel/train-venv/bin/python training/eval_hardneg_local.py --wiki-n 12 --strict-bushon
+    ~/gavel/train-venv/bin/python training/eval_hardneg_local.py --wiki-n 16 --strict-bushon
 """
 
 from __future__ import annotations
@@ -72,7 +74,7 @@ def main() -> int:
     parser.add_argument("--samples", type=Path, default=ROOT / "samples")
     parser.add_argument("--bushon-eval", type=Path, default=DEFAULT_BUSHON)
     parser.add_argument("--wiki", type=Path, default=DEFAULT_WIKI)
-    parser.add_argument("--wiki-n", type=int, default=8)
+    parser.add_argument("--wiki-n", type=int, default=16)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--strict-bushon", action="store_true")
     parser.add_argument("--allow-gym-uncertain", action="store_true")
@@ -98,7 +100,7 @@ def main() -> int:
                 continue
             if expect == "ai" and decision == "real":
                 failures.append(f"{path.name}: FN decision=real fusion={fusion}")
-            if path.name == "real_street_florence.jpg" and decision == "generated":
+            if path.name in {"real_street_florence.jpg", "real_corridor_jama_masjid.jpg"} and decision == "generated":
                 failures.append(f"{path.name}: FP decision=generated fusion={fusion}")
             if path.name == "real_hand_gym.jpg" and decision == "generated":
                 failures.append(f"{path.name}: FP decision=generated fusion={fusion}")
@@ -109,17 +111,27 @@ def main() -> int:
             ):
                 soft.append(f"{path.name}: uncertain (prefer real)")
 
+    def _note_real_leaveout(tag: str, name: str, decision: str | None, fusion: str | None) -> None:
+        if decision != "generated":
+            return
+        fusion_s = fusion or ""
+        if "physics" in fusion_s:
+            failures.append(f"{tag} {name}: physics still voting fusion={fusion_s}")
+            return
+        msg = f"{tag} {name}: decision=generated fusion={fusion_s}"
+        if args.strict_bushon:
+            failures.append(msg)
+        elif fusion_s.startswith("layers:artifacts") or fusion_s == "layers:artifacts":
+            soft.append(msg + " (soft artifacts FP)")
+        else:
+            soft.append(msg)
+
     # --- bushon leave-out on E ---
     for path in _iter_images(args.bushon_eval):
         decision, fusion, l0 = _run_one(pipe, path)
         l0_s = "n/a" if l0 is None else f"{l0:.3f}"
         print(f"{'bushon_eval':12} {path.name:40} {l0_s:8} {decision or 'n/a':10} {fusion}")
-        if decision == "generated":
-            msg = f"bushon {path.name}: decision=generated fusion={fusion}"
-            if args.strict_bushon:
-                failures.append(msg)
-            else:
-                soft.append(msg)
+        _note_real_leaveout("bushon", path.name, decision, fusion)
 
     # --- random wiki hands ---
     wiki_paths = _iter_images(args.wiki / "images") or _iter_images(args.wiki)
@@ -130,8 +142,7 @@ def main() -> int:
             decision, fusion, l0 = _run_one(pipe, path)
             l0_s = "n/a" if l0 is None else f"{l0:.3f}"
             print(f"{'wiki':12} {path.name:40} {l0_s:8} {decision or 'n/a':10} {fusion}")
-            if decision == "generated":
-                soft.append(f"wiki {path.name}: decision=generated fusion={fusion}")
+            _note_real_leaveout("wiki", path.name, decision, fusion)
 
     if soft:
         print("\nSOFT")

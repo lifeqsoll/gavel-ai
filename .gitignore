@@ -1,15 +1,24 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
+.eggs/
+dist/
+build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
 
 # Virtual environments
 .venv/
 .venv*/
 venv/
+env/
 
 # Gradio / local run
 .gradio/
@@ -21,6 +30,7 @@ venv/
 /output/
 /results/
 *.log
+.write_test*
 
 # Datasets and large caches (never commit)
 /data/
@@ -35,17 +45,28 @@ venv/
 /models/prev_*/
 /models/cnn*/
 /models/cnn_*/
+/models/*_unnormalized*
+/models/control_metrics.json
 *.pt
 *.pth
 *.safetensors
 *.onnx
 *.ckpt
 
+# Broken / recovered git leftovers (ntfs3)
+.git_new/
+.git_corrupt*/
+.git_bak*/
+*.broken
+
 # Editor and OS
 .idea/
 .vscode/
 .DS_Store
+.cursor/
 *~
+*.swp
+*.swo
 
 # Sample AI images: license unclear — keep local only
 /samples/ai_generated/
@@ -53,3 +74,10 @@ venv/
 # Local scratch
 /tmp/
 /testtttt/
+/plans/
+*.canvas.tsx
+
+# Env / secrets
+.env
+.env.*
+!.env.example

@@ -43,6 +43,8 @@ def analyze_file(pipeline: GavelPipeline, path: Path, out_dir: Path) -> dict:
         "size": f"{image.shape[1]}x{image.shape[0]}",
         "decision": verdict.decision,
         "label": verdict.label,
+        "lean": verdict.lean,
+        "guidance": verdict.guidance,
         "fusion": verdict.fusion,
         "probability": verdict.probability,
         "detector": None if detector is None else f"{detector.decision} (p={detector.probability:.3f})",
@@ -69,6 +71,10 @@ def main() -> None:
         print(f"\n{summary['file']} ({summary['size']})")
         print(f"  final                  {summary['decision']} ({summary['label']})")
         print(f"  fusion                 {summary['fusion']}")
+        if summary.get("lean"):
+            print(f"  lean                   {summary['lean']}")
+        if summary.get("guidance"):
+            print(f"  guidance               {summary['guidance']}")
         if summary["probability"] is not None:
             print(f"  L0 probability         {summary['probability']:.3f}")
         if summary["detector"]:

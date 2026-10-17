@@ -23,7 +23,7 @@ from core.registry import (
 )
 from core.validators.edges import analyze_edges
 from core.validators.halves import HalvesConfig, analyze_halves
-from core.verdict import LABEL_GENERATION_SIGNAL, compute_verdict
+from core.verdict import compute_verdict
 
 
 def test_analyze_halves_flags_diptych_energy_gap():
@@ -63,7 +63,7 @@ def test_light_agent_default_provider_runs():
     assert agent.extract(img) == []
 
 
-def test_physics_hard_vote_via_injected_provider():
+def test_physics_runs_but_does_not_vote_alone():
     light = (200.0, 80.0)
     objects = [
         ShadowObjectSpec("a", (400.0, 200.0, 480.0, 360.0), 180.0, deviation_deg=25.0),
@@ -80,11 +80,11 @@ def test_physics_hard_vote_via_injected_provider():
     assert result.protocol.layers.physics.signal
     assert any(e.anomaly_type is AnomalyType.LIGHT_CONSISTENCY_VIOLATION for e in result.protocol.evidences)
     verdict = compute_verdict(result.protocol)
-    assert verdict.decision == "generated"
-    assert "physics" in (verdict.fusion or "")
+    assert verdict.decision == "uncertain"
+    assert "physics" not in (verdict.fusion or "")
 
 
-def test_fusion_physics_layer_vote_without_l0():
+def test_fusion_physics_does_not_overturn_l0_real():
     protocol = EvidenceProtocol(
         image=ImageMetadata(file_name="x", width=100, height=100),
         checks=[CheckRecord(check="lighting.consistency", status="violation")],
@@ -110,6 +110,5 @@ def test_fusion_physics_layer_vote_without_l0():
         ),
     )
     verdict = compute_verdict(protocol)
-    assert verdict.label == LABEL_GENERATION_SIGNAL
-    assert verdict.decision == "generated"
-    assert "physics" in (verdict.fusion or "")
+    assert verdict.decision == "real"
+    assert "physics" not in (verdict.fusion or "")

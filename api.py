@@ -109,6 +109,8 @@ def create_app(api_keys: set[str] | None = None) -> FastAPI:
         body: dict = {
             "decision": verdict.decision,
             "label": verdict.label,
+            "lean": verdict.lean,
+            "guidance": verdict.guidance,
             "fusion": verdict.fusion,
             "probability": verdict.probability,
             "high_threshold": verdict.high_threshold,

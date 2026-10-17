@@ -49,10 +49,34 @@ class Verdict:
     decision: str | None = None
     high_threshold: float | None = None
     fusion: str | None = None
+    lean: str | None = None
+    guidance: str | None = None
 
     @property
     def coverage_note(self) -> str:
         return f"{self.checks_run} of {self.checks_total} checks ran"
+
+
+def decision_lean_and_guidance(
+    decision: str | None,
+    probability: float | None,
+    high_threshold: float | None,
+) -> tuple[str | None, str]:
+    """Product-facing lean + short guidance. Does not change fusion decision."""
+    if decision == "generated":
+        return "generated", "Possible generation signal. Verify manually."
+    if decision == "real":
+        return "real", "No generation signal."
+    if decision != "uncertain":
+        return None, "Not analyzed."
+    if probability is None or high_threshold is None or high_threshold <= 0:
+        return "uncertain", "Inconclusive. Verify manually."
+    ratio = probability / high_threshold
+    if ratio < 0.45:
+        return "realish", "Inconclusive, leans toward no signal. Verify if stakes are high."
+    if ratio >= 0.75:
+        return "generatedish", "Inconclusive, leans toward generation. Verify manually."
+    return "uncertain", "Inconclusive. Verify manually."
 
 
 LABEL_NOT_ANALYZED = "Not analyzed (no check ran)"
@@ -215,6 +239,8 @@ def hand_crop_disagrees_l0(protocol: EvidenceProtocol, config: VerdictConfig) ->
 # Soft cues: useful with L0 uncertain/generated, but alone they FP on real night/texture
 # photos (train platforms, cobblestone). Cannot overturn a calibrated L0_real.
 _SOFT_LAYER_VOTES = frozenset({"artifacts"})
+# Classical shadow pairing FPs on real hands/scenes; keep layer for UI, do not vote.
+_NON_VOTING_LAYERS = frozenset({"physics"})
 
 
 def fuse_layers(
@@ -226,7 +252,9 @@ def fuse_layers(
     layer_hits = [
         layer.name
         for layer in _layer_list(protocol)
-        if _layer_votes(layer) and layer.name != "global"
+        if _layer_votes(layer)
+        and layer.name != "global"
+        and layer.name not in _NON_VOTING_LAYERS
     ]
     hard_hits = [name for name in layer_hits if name not in _SOFT_LAYER_VOTES]
     soft_hits = [name for name in layer_hits if name in _SOFT_LAYER_VOTES]
@@ -366,16 +394,21 @@ def compute_verdict(protocol: EvidenceProtocol, config: VerdictConfig | None = N
     layers_ready = any(l.status == "ran" for l in _layer_list(protocol))
     if protocol.detector is not None or layers_ready:
         label, decision, fusion = fuse_layers(protocol, config)
+        probability = protocol.detector.probability if protocol.detector else None
+        high_threshold = protocol.detector.high_threshold if protocol.detector else None
+        lean, guidance = decision_lean_and_guidance(decision, probability, high_threshold)
         return Verdict(
             score=score,
             label=label,
             checks_run=checks_run,
             checks_total=checks_total,
             findings=findings,
-            probability=protocol.detector.probability if protocol.detector else None,
+            probability=probability,
             decision=decision,
-            high_threshold=protocol.detector.high_threshold if protocol.detector else None,
+            high_threshold=high_threshold,
             fusion=fusion,
+            lean=lean,
+            guidance=guidance,
         )
 
     if checks_run == 0:

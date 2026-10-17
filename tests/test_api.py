@@ -50,6 +50,8 @@ def test_analyze_with_key_200(client):
     body = r.json()
     assert "decision" in body
     assert "fusion" in body
+    assert "guidance" in body
+    assert "lean" in body
     assert "protocol" in body
 
 

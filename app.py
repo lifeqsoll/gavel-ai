@@ -108,7 +108,9 @@ def _layers_markdown(protocol) -> list[str]:
                 and protocol.detector is not None
                 and protocol.detector.views_disagree
             )
-            if soft_blocked:
+            if layer.name == "physics" and layer.signal:
+                vote = "cue only (no fusion vote)"
+            elif soft_blocked:
                 vote = "cue only (ignored: L0=real)"
             elif tiles_blocked and layer.signal:
                 vote = "tiles disagree (fusion may force uncertain)"
@@ -156,12 +158,18 @@ def _detector_summary(verdict: Verdict, protocol=None) -> str:
         f"L0 is only one layer. Final label uses fusion A.  ",
         f"Coverage: {verdict.coverage_note}",
         "",
+    ]
+    if verdict.guidance:
+        lines.append(f"**Guidance:** {verdict.guidance}  ")
+        if verdict.lean and verdict.lean not in {decision, "uncertain"}:
+            lines.append(f"Lean: `{verdict.lean}`  ")
+        lines.append("")
+    lines += [
         "**Fusion A.** Signal if L0=`generated` OR a hard layer vote (geometry CRITICAL, "
-        "anatomy evidence, physics evidence). Artifacts are a soft cue: they vote with L0 "
-        "uncertain/generated, but cannot overturn L0=`real`. Wide tiles that disagree force "
-        "`uncertain` unless a hard layer already voted. Face-free hand close-ups can veto L0 FP "
-        "via map and/or L0 hand-crop probe (overlay: white=tiles, blue=hand crops). "
-        "Physics uses classical shadow pairing; skipped when fewer than two rays. "
+        "anatomy evidence). Artifacts are a soft cue: they vote with L0 uncertain/generated, "
+        "but cannot overturn L0=`real`. Physics is cue-only (classical shadows, no fusion vote). "
+        "Wide tiles that disagree force `uncertain` unless a hard layer already voted. "
+        "Face-free hand close-ups can veto L0 FP via map and/or L0 hand-crop probe. "
         "Cyan/green/amber = anatomy map; magenta = anatomy anomaly; yellow ART = soft artifacts. "
         "Only L0 is calibrated.",
         "",
